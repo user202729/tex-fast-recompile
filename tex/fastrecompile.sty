@@ -1,0 +1,64 @@
+\ProvidesExplPackage{fastrecompile}{2023/01/13}{0.1.0}{Helper library to speed up LaTeX compilation}
+
+\NewDocumentCommand \fastrecompileendpreamble {} {
+  \__fast_recompile_end_preamble:
+}
+
+\cs_new_protected:Npn \__fast_recompile_end_preamble: {
+
+  % first read a line from the terminal (to wait for a file to change)
+  % conveniently the parent process also write the file name in this line
+  \int_set:Nn \l_tmpa_int { \interactionmode }
+  \interactionmode=3~ % set interactionmode to errorstopmode so it's possible to read from terminal
+  \ior_str_get_term:nN {} \__fast_recompile_file_name_str
+  \interactionmode=\l_tmpa_int % restore interactionmode
+
+  % then \@@input from that file name
+  % (we need to do this instead of just normally continue because the file has changed...)
+  % but first change the category codes to gobble first X lines
+  % (where X is the number of lines in the preamble which is to be computed from \inputlineno)
+  \begingroup
+
+
+  % we need to handle { and } (avoid gobbling gobble multiple lines),
+  % % (avoid commenting out the ^^M token),
+  % and \ (avoid that at the end of a line escaping the ^^M token)
+  % and also ^ (avoid accidentally creating a ^^M token)
+  \catcode `{ \active
+  \catcode `} \active
+  \catcode `\% \active
+  \catcode `^ \active
+  \catcode `\\ \active
+
+
+  \endlinechar 13      % should already be true but just in case
+  \catcode `\^^M \active
+
+  \int_set:Nn \l_tmpa_int { \inputlineno-1 }  % executing \@@input will change the \inputlineno
+  \expandafter \__fast_recompile_gobble_lines:
+    \tex_input:D { \__fast_recompile_file_name_str }
+    \errmessage { This~cannot~happen.~
+      File~contain~\string\fastrecompileendpreamble~command~
+      must~be~main~file. }
+    \stop
+}
+
+\cs_new_protected:Npn \__fast_recompile_gobble_lines: {
+  \__fast_recompile_gobble_lines:fw { \int_use:N \l_tmpa_int }
+}
+
+\begingroup
+\catcode `\^^M \active
+\cs_new_protected:Npn \__fast_recompile_gobble_lines:nw #1 #2 ^^M {
+  % #1 is the number of remaining lines to be gobbled
+  % #2 is the line content, to be discarded
+  \int_compare:nNnTF { #1 } > { 0 } {
+    \__fast_recompile_gobble_lines:fw { \int_eval:n { #1-1 } }
+  } {
+    \endgroup
+  }
+}
+\endgroup
+
+\cs_generate_variant:Nn \__fast_recompile_gobble_lines:nw { f }
+
