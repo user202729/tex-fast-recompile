@@ -10,7 +10,7 @@ def extract_preamble(text: str)->list[str]:
 	try:
 		index=lines.index(search_str)
 	except ValueError:
-		raise RuntimeError(r"File does not contain \fastrecompileendpreamble line!")
+		raise RuntimeError(r"File does not contain \fastrecompileendpreamble line!") from None
 
 	# ensure there's only one occurrence of the search string
 	try:
@@ -21,6 +21,27 @@ def extract_preamble(text: str)->list[str]:
 
 	# return the preamble
 	return lines[:index]
+
+
+def add_package_and_end_preamble_line(text: str)->tuple[list[str], str]:
+	r"""
+	add the \fastrecompileendpreamble command right after the line with \begin{document}
+	return the preamble (first return value) and the modified source code (second return value)
+
+	the line numbers in the modified source code must be the same as in the original source code
+	"""
+	lines=text.splitlines()
+
+	# first ensure it does not already have any \fastrecompileendpreamble lines
+	if r"\fastrecompileendpreamble" in lines:
+		raise RuntimeError(r"File already contains \fastrecompileendpreamble line! Consider removing the --add-package option.")
+
+	try:
+		index=lines.index(r"\begin{document}")
+	except ValueError:
+		raise RuntimeError(r"File does not contain \begin{document} line!") from None
+	lines[index]+=r"\fastrecompileendpreamble"
+	return lines[:index], r"\RequirePackage{fastrecompile}" + "\n".join(lines)
 
 
 def main()->None:
@@ -45,23 +66,43 @@ def main()->None:
 					 "must not be passed here. "
 					 "Pass the argument multiple times to add multiple arguments.")
 	parser.add_argument("--extra-watch", type=Path, default=[], action="append", help="Extra files to watch")
-	parser.add_argument("--extra-delay", type=float, default=0, help=
+	parser.add_argument("--extra-delay", type=float, default=0.05, help=
 					 "Time to wait after some file change before recompile in seconds. "
 					 "This is needed because some editor such as vim deletes the file first then write the new content, "
 					 "in that case it's preferable to wait a bit before reading the file content.")
-	parser.add_argument("--close-stdin", action="store_true", help="Close stdin of the TeX process so that it exits out on error")
+	parser.add_argument("--close-stdin", action="store_true", help="Close stdin of the TeX process so that it exits out on error. This is the default.",
+					 default=True)
+	parser.add_argument("--no-close-stdin", action="store_false", dest="close-stdin", help="Reverse of --close-stdin.")
 	parser.add_argument("--copy-output", type=Path, help="After compilation finishes, copy the output file to the given path")
+	parser.add_argument("--add-package", action="store_true", default=True, help=r"Manually add \RequirePackage{fastrecompile} and \fastrecompileendpreamble to the file. "
+					 "Use this option if and only if the file does not already have these lines.")
+	parser.add_argument("--no-add-package", action="store_false", dest="add-package", help="Reverse of --add-package.")
 	parser.add_argument("--copy-log", type=Path,
 					 help="After compilation finishes, copy the log file to the given path. "
 					 "If you want to read the log file, you must use this option and read it at the target path.")
 	parser.add_argument("filename", help="The filename to compile")
 	args=parser.parse_args()
 
+	jobname=args.jobname
+	if jobname is None:
+		jobname=Path(args.filename).stem
+
+	filename=args.filename
+	if args.add_package:
+		# create a temporary TeX file to store the modified source code
+		import tempfile
+		with tempfile.NamedTemporaryFile(mode="w",suffix=".tex",delete=False) as f:
+			filename=f.name
+			preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
+			f.write(modified_code)
+	else:
+		preamble=extract_preamble(Path(args.filename).read_text())
+
 
 	# build the command
 	command=[args.executable]
-	if args.jobname is not None:
-		command.append("--jobname="+args.jobname)
+	if args.jobname is not None or args.add_package:  # if add_package then we must explicitly specify the jobname otherwise it will be the temporary file name
+		command.append("--jobname="+jobname)
 	if args.output_directory is not None:
 		command.append("--output-directory="+args.output_directory)
 	if args.shell_escape:
@@ -72,12 +113,9 @@ def main()->None:
 		command.append("--recorder")
 	if args.extra_args:
 		command+=args.extra_args
-	command.append(args.filename)
+	command.append(filename)
 
 	
-	jobname=args.jobname
-	if jobname is None:
-		jobname=Path(args.filename).stem
 
 	output_directory=args.output_directory
 	if output_directory is None:
@@ -123,7 +161,6 @@ def main()->None:
 	thread.start()
 
 
-	preamble=extract_preamble(Path(args.filename).read_text())
 	first_iteration=True
 	while True:
 		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -145,8 +182,15 @@ def main()->None:
 			q.get()
 
 		# check if the preamble is still the same
-		if preamble!=extract_preamble(Path(args.filename).read_text()):
-			raise RuntimeError("Preamble changed, aborting.")
+		if args.add_package:
+			new_preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
+			if preamble!=new_preamble:
+				raise RuntimeError("Preamble changed, aborting.")
+			# we don't need to write the modified_code as we only cares about the preamble in the temporary file
+			# and the preamble is already the same as the one in the temporary file
+		else:
+			if preamble!=extract_preamble(Path(args.filename).read_text()):
+				raise RuntimeError("Preamble changed, aborting.")
 
 		if process.poll() is not None:
 			sys.stdout.buffer.write(process.stdout.read())
@@ -166,7 +210,9 @@ def main()->None:
 			import sys
 			while True:
 				assert process.stdout is not None
-				content=process.stdout.read()
+				# this is a bit inefficient in that it reads one byte at a time
+				# but I don't know how to do it better
+				content=process.stdout.read(1)
 				if content==b"":
 					break
 				sys.stdout.buffer.write(content)

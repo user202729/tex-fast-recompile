@@ -33,30 +33,13 @@ tex_fast_recompile pdflatex a.tex
 
 to compile `a.tex` to `a.pdf` and automatically watch it on changes.
 
-Before that, you need to modify your TeX file as follows:
-
-```
-\documentclass{article}
-\usepackage{fastrecompile}  % add the package here
-% other preamble lines...
-\begin{document}
-
-% put the line below where the preamble ends:
-\fastrecompileendpreamble
-
-...
-
-\end{document}
-```
-
 ## Limitations
 
-* `\fastrecompileendpreamble` must appear exactly once in the *main* file.
-* There must be nothing else on the line that contains `\fastrecompileendpreamble`.
 * SyncTeX features of the text part in the "preamble" may not be correct. (if you're not sure what this mean, you should be safe. But see the "Extra note" section below)
 * The preamble must not be changed. Furthermore, any file `\input` in the preamble must not be changed. (obviously)
 * You must not read from the terminal anywhere in the preamble, such as with functions `\read -1 to ...` or `\ior_get_term:nN ...`.
 (if you're not sure what this mean, you should be safe)
+
 
 ## Extra note
 
@@ -79,6 +62,33 @@ It's possible to print out some content in the "preamble" part, but if you do so
 ```
 
 you must also use the `--copy-output` option if you want to view the resulting PDF.
+
+### `--no-add-package` mode
+
+Behind the scene, some magic is done on your TeX file.
+
+If you want to do that manually, you need to modify your TeX file as follows:
+
+```
+\documentclass{article}
+\usepackage{fastrecompile}  % add the package here
+% other preamble lines...
+\begin{document}
+
+% put the line below where the preamble ends:
+\fastrecompileendpreamble
+
+...
+
+\end{document}
+```
+
+then compile your document with `--no-add-package` flag added.
+
+Note that:
+
+* `\fastrecompileendpreamble` must appear exactly once in the *main* file.
+* There must be nothing else on the line that contains `\fastrecompileendpreamble`.
 
 
 ## How does it work?
