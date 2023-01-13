@@ -27,7 +27,7 @@ Run `tex_fast_recompile --help` to view the available options.
 
 For example you can use it as follows:
 
-```
+```bash
 tex_fast_recompile pdflatex a.tex
 ```
 
@@ -47,7 +47,7 @@ If you want to read the log file, refer to the help of `--copy-log` option.
 
 It's possible to print out some content in the "preamble" part, but if you do so...
 
-```
+```tex
 \documentclass{article}
 \usepackage{fastrecompile}  % add the package here
 % other preamble lines...
@@ -69,9 +69,9 @@ Behind the scene, some magic is done on your TeX file.
 
 If you want to do that manually, you need to modify your TeX file as follows:
 
-```
+```tex
 \documentclass{article}
-\usepackage{fastrecompile}  % add the package here
+\usepackage{fastrecompile}  % manually add the package here
 % other preamble lines...
 \begin{document}
 
@@ -118,5 +118,5 @@ A graph for illustration:
      |--.--|--. --|--.           --|--.      --|
 ```
 
-It can be easily seen that after the change, it only takes 2 instead of 5 time unit
+It can be easily seen that after the change, it only takes 2 instead of 5 time units
 from when the file is saved to when the change is reflected in the PDF.
