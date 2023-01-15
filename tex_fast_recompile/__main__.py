@@ -44,6 +44,10 @@ def add_package_and_end_preamble_line(text: str)->tuple[list[str], str]:
 	return lines[:index], r"\RequirePackage{fastrecompile}" + "\n".join(lines)
 
 
+class PreambleChangedError(Exception):
+	pass
+
+
 def main()->None:
 	import argparse
 	import sys
@@ -80,6 +84,9 @@ def main()->None:
 	parser.add_argument("--copy-log", type=Path,
 					 help="After compilation finishes, copy the log file to the given path. "
 					 "If you want to read the log file, you must use this option and read it at the target path.")
+	parser.add_argument("--abort-on-preamble-change", action="store_true", help="Abort compilation if the preamble changed.")
+	parser.add_argument("--continue-on-preamble-change", action="store_false", dest="abort-on-preamble-change", help="Continue compilation if the preamble changed. Reverse of --abort-on-preamble-change.")
+	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
 	parser.add_argument("filename", help="The filename to compile")
 	args=parser.parse_args()
 
@@ -87,16 +94,17 @@ def main()->None:
 	if jobname is None:
 		jobname=Path(args.filename).stem
 
-	filename=args.filename
+	# compiling_filename is the actual filename to be compiled, which might be the provided filename
+	# or a temporarily created file in case --add-package is provided (we need to patch the source code)
+
 	if args.add_package:
 		# create a temporary TeX file to store the modified source code
 		import tempfile
-		with tempfile.NamedTemporaryFile(mode="w",suffix=".tex",delete=False) as f:
-			filename=f.name
-			preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
-			f.write(modified_code)
+		temporary_filename=tempfile.mktemp(suffix=".tex")
+		compiling_filename=temporary_filename
 	else:
-		preamble=extract_preamble(Path(args.filename).read_text())
+		compiling_filename=args.filename
+
 
 
 	# build the command
@@ -113,7 +121,7 @@ def main()->None:
 		command.append("--recorder")
 	if args.extra_args:
 		command+=args.extra_args
-	command.append(filename)
+	command.append(compiling_filename)
 
 	
 
@@ -161,82 +169,110 @@ def main()->None:
 	thread.start()
 
 
-	first_iteration=True
-	while True:
-		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-		assert process.stdin is not None
-		assert process.stdout is not None
+	try:
+		while True:
 
-		# wait until something is available in the queue
-		if first_iteration:
-			first_iteration=False
-		else:
-			q.get()
+			if args.add_package:
+				preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
+				Path(compiling_filename).write_text(modified_code)
+			else:
+				preamble=extract_preamble(Path(args.filename).read_text())
 
-			# wait for the specified delay
-			import time
-			time.sleep(args.extra_delay)
-
-		# empty out the queue
-		while not q.empty():
-			q.get()
-
-		# check if the preamble is still the same
-		if args.add_package:
-			new_preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
-			if preamble!=new_preamble:
-				raise RuntimeError("Preamble changed, aborting.")
-			# we don't need to write the modified_code as we only cares about the preamble in the temporary file
-			# and the preamble is already the same as the one in the temporary file
-		else:
-			if preamble!=extract_preamble(Path(args.filename).read_text()):
-				raise RuntimeError("Preamble changed, aborting.")
-
-		if process.poll() is not None:
-			sys.stdout.buffer.write(process.stdout.read())
-			sys.stdout.buffer.flush()
-			raise RuntimeError("Process exited while processing the preamble")
-
-		# send one line to the process to wake it up
-		# (before this step, process stdout must be suppressed)
-		process.stdin.write(args.filename.encode('u8') + b"\n")
-		process.stdin.flush()
-		if args.close_stdin:
-			process.stdin.close()
-
-		# start a new thread to copy process stdout to sys.stdout
-		# the copy should be done such that partially-written lines get copied immediately when they're written
-		def copy_stdout_work()->None:
-			import sys
-			while True:
-				assert process.stdout is not None
-				# this is a bit inefficient in that it reads one byte at a time
-				# but I don't know how to do it better
-				content=process.stdout.read(1)
-				if content==b"":
-					break
-				sys.stdout.buffer.write(content)
-				sys.stdout.buffer.flush()
-		copy_stdout_thread=threading.Thread(target=copy_stdout_work)
-		copy_stdout_thread.start()
-
-		# wait for the process to finish
-		process.wait()
-
-		copy_stdout_thread.join()
-
-		import shutil
-
-
-		if args.copy_output is not None:
+			first_iteration=True
 			try:
-				shutil.copyfile(generated_pdf_path, args.copy_output)
-			except FileNotFoundError:
-				pass
+				while True:
+					try:
 
-		if args.copy_log is not None:
-			# this must not error out
-			shutil.copyfile(generated_log_path, args.copy_log)
+						process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+						assert process.stdin is not None
+						assert process.stdout is not None
+
+						# wait until something is available in the queue
+						if first_iteration:
+							first_iteration=False
+						else:
+							q.get()
+							sys.stdout.write("\n"*args.num_separation_lines)
+
+							# wait for the specified delay
+							import time
+							time.sleep(args.extra_delay)
+
+						# empty out the queue
+						while not q.empty():
+							q.get()
+
+						# check if the preamble is still the same
+						if args.add_package:
+							new_preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
+							if preamble!=new_preamble:
+								raise PreambleChangedError()
+							# we don't need to write the modified_code as we only cares about the preamble in the temporary file
+							# and the preamble is already the same as the one in the temporary file
+						else:
+							if preamble!=extract_preamble(Path(args.filename).read_text()):
+								raise PreambleChangedError()
+
+						if process.poll() is not None:
+							sys.stdout.buffer.write(process.stdout.read())
+							sys.stdout.buffer.flush()
+							raise RuntimeError("Process exited while processing the preamble")
+
+						# send one line to the process to wake it up
+						# (before this step, process stdout must be suppressed)
+						process.stdin.write(args.filename.encode('u8') + b"\n")
+						process.stdin.flush()
+						if args.close_stdin:
+							process.stdin.close()
+
+						# start a new thread to copy process stdout to sys.stdout
+						# the copy should be done such that partially-written lines get copied immediately when they're written
+						def copy_stdout_work()->None:
+							import sys
+							while True:
+								assert process.stdout is not None
+								# this is a bit inefficient in that it reads one byte at a time
+								# but I don't know how to do it better
+								content=process.stdout.read(1)
+								if content==b"":
+									break
+								sys.stdout.buffer.write(content)
+								sys.stdout.buffer.flush()
+						copy_stdout_thread=threading.Thread(target=copy_stdout_work)
+						copy_stdout_thread.start()
+
+						# wait for the process to finish
+						process.wait()
+
+					finally:
+						process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
+
+					copy_stdout_thread.join()
+
+					import shutil
+
+
+					if args.copy_output is not None:
+						try:
+							shutil.copyfile(generated_pdf_path, args.copy_output)
+						except FileNotFoundError:
+							pass
+
+					if args.copy_log is not None:
+						# this must not error out
+						shutil.copyfile(generated_log_path, args.copy_log)
+
+			except PreambleChangedError:
+				if args.abort_on_preamble_change:
+					break
+				else:
+					sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
+					continue
+				
+
+	finally:
+		if args.add_package:
+			Path(temporary_filename).unlink()
 
 
 if __name__ == "__main__":
