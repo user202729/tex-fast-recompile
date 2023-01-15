@@ -103,13 +103,15 @@ def main(args=None)->None:
 		jobname=Path(args.filename).stem
 
 	# compiling_filename is the actual filename to be compiled, which might be the provided filename
-	# or a temporarily created file in case --add-package is provided (we need to patch the source code)
+	# or a patched source code (startings with `\`) in case --add-package is provided
 
 	if args.add_package:
-		# create a temporary TeX file to store the modified source code
-		import tempfile
-		temporary_filename=tempfile.mktemp(suffix=".tex")
-		compiling_filename=temporary_filename
+		assert '"' not in args.filename
+		compiling_filename=(
+			r"\RequirePackage{fastrecompile}"
+			r"\AddToHook{begindocument/end}[fastrecompile]{\fastrecompileendpreamble}"
+			r"\fastrecompileinputreadline"
+			)
 	else:
 		compiling_filename=args.filename
 
@@ -195,7 +197,6 @@ def main(args=None)->None:
 
 			if args.add_package:
 				preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
-				Path(compiling_filename).write_text(modified_code)
 			else:
 				preamble=extract_preamble(Path(args.filename).read_text())
 
@@ -207,6 +208,11 @@ def main(args=None)->None:
 						process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 						assert process.stdin is not None
 						assert process.stdout is not None
+
+						if args.add_package:
+							# the inserted command \fastrecompileinputreadline need to read the filename from stdin
+							process.stdin.write(args.filename.encode('u8') + b"\n")
+							process.stdin.flush()
 
 						# wait until something is available in the queue
 						if first_iteration:
@@ -299,8 +305,7 @@ def main(args=None)->None:
 				
 
 	finally:
-		if args.add_package:
-			Path(temporary_filename).unlink()
+		pass
 
 
 if __name__ == "__main__":
