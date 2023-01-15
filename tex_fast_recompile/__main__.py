@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import sys
+from pathlib import Path
+
 def extract_preamble(text: str)->list[str]:
 	# split into lines
 	lines=text.splitlines()
@@ -48,11 +52,7 @@ class PreambleChangedError(Exception):
 	pass
 
 
-def main()->None:
-	import argparse
-	import sys
-	from pathlib import Path
-
+def get_parser()->argparse.ArgumentParser:
 	parser=argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
 								usage="A Python module to speed up TeX compilation. "
 								"Usually prepending `tex_fast_recompile` to your pdflatex command is enough."
@@ -76,9 +76,10 @@ def main()->None:
 					 "in that case it's preferable to wait a bit before reading the file content.")
 	parser.add_argument("--close-stdin", action="store_true", help="Close stdin of the TeX process so that it exits out on error. This is the default.",
 					 default=True)
-	parser.add_argument("--no-close-stdin", action="store_false", dest="close-stdin", help="Reverse of --close-stdin.")
+	parser.add_argument("--no-close-stdin", action="store_false", dest="close-stdin", help="Reverse of --close-stdin. Currently not very well-supported.")
 	parser.add_argument("--copy-output", type=Path, help="After compilation finishes, copy the output file to the given path")
-	parser.add_argument("--add-package", action="store_true", default=True, help=r"Manually add \RequirePackage{fastrecompile} and \fastrecompileendpreamble to the file. "
+	parser.add_argument("--add-package", action="store_true", default=True,
+					 help=r"Automatically patch the source code to add \RequirePackage{fastrecompile} and \fastrecompileendpreamble to the file. "
 					 "Use this option if and only if the file does not already have these lines.")
 	parser.add_argument("--no-add-package", action="store_false", dest="add-package", help="Reverse of --add-package.")
 	parser.add_argument("--copy-log", type=Path,
@@ -87,8 +88,15 @@ def main()->None:
 	parser.add_argument("--abort-on-preamble-change", action="store_true", help="Abort compilation if the preamble changed.")
 	parser.add_argument("--continue-on-preamble-change", action="store_false", dest="abort-on-preamble-change", help="Continue compilation if the preamble changed. Reverse of --abort-on-preamble-change.")
 	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
+	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")
+	parser.add_argument("--failure-cmd", help="Command to run after compilation fails. (currently unsupported)")
 	parser.add_argument("filename", help="The filename to compile")
-	args=parser.parse_args()
+	return parser
+
+
+def main(args=None)->None:
+	if args is None:
+		args=get_parser().parse_args()
 
 	jobname=args.jobname
 	if jobname is None:
@@ -261,6 +269,9 @@ def main()->None:
 					if args.copy_log is not None:
 						# this must not error out
 						shutil.copyfile(generated_log_path, args.copy_log)
+
+					if args.success_cmd:
+						subprocess.run(args.success_cmd, shell=True, check=True)
 
 			except PreambleChangedError:
 				if args.abort_on_preamble_change:

@@ -2,7 +2,7 @@
 
 A Python module to speed up TeX compilation.
 
-This is similar to `mylatexformat` TeX package that it works by "speed up" some "preamble",
+This is similar to the [`mylatexformat` TeX package](https://ctan.org/pkg/mylatexformat) that it works by "speed up" some "preamble",
 but unlike using "precompiled preamble" i.e. custom TeX format,
 this package works with *every* package including package that executes some Lua code, or load OpenType font.
 
@@ -21,6 +21,8 @@ Refer to https://tex.stackexchange.com/q/1137/250119 for installation instructio
 
 ## Usage
 
+### Normal mode
+
 If installed properly, an executable `tex_fast_recompile` should be available on your command-line.
 
 Run `tex_fast_recompile --help` to view the available options.
@@ -33,15 +35,31 @@ tex_fast_recompile pdflatex a.tex
 
 to compile `a.tex` to `a.pdf` and automatically watch it on changes.
 
+Usually prepending it to your LaTeX compilation command suffices.
+
+### LaTeXmk emulation mode
+
+For compatibility with e.g. `vimtex` plugin, an executable `tex_fast_recompile_latexmk` is provided, which takes arguments similar to that of `latexmk`.
+(but it does not do multiple compilation passes or invoke bibliography/indexing commands etc., and the simulation might not be complete)
+
+Run `tex_fast_recompile_latexmk --help` to view the available options. (should be similar to `latexmk`'s accepted options)
+
+For VimTeX usage, putting the following configuration in `.vimrc` usually suffices:
+
+```vim
+let g:vimtex_compiler_method='latexmk'
+let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
+```
+
 ## Limitations
 
-* SyncTeX features of the text part in the "preamble" may not be correct. (if you're not sure what this mean, you should be safe. But see the "Extra note" section below)
-* The preamble must not be changed. Furthermore, any file `\input` in the preamble must not be changed. (obviously)
+* Any file `\input` in the preamble must not be changed. (when the preamble changes, the program will automatically detect that)
 * You must not read from the terminal anywhere in the preamble, such as with functions `\read -1 to ...` or `\ior_get_term:nN ...`.
 (if you're not sure what this mean, you should be safe)
 
+## Advanced notes
 
-## Extra note
+### Extra note
 
 If you want to read the log file, refer to the help of `--copy-log` option.
 
@@ -89,9 +107,10 @@ Note that:
 
 * `\fastrecompileendpreamble` must appear exactly once in the *main* file.
 * There must be nothing else on the line that contains `\fastrecompileendpreamble`.
+* SyncTeX features of the text part in the "preamble" may not be correct.
 
 
-## How does it work?
+### How does it work?
 
 The principle is very simple. Notice that while the user want fast refresh, the file does not change very frequently.
 
