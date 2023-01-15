@@ -157,25 +157,38 @@ def main(args=None)->None:
 	# create a queue to wake up the main thread whenever something changed
 	q: queue.Queue[None]=queue.Queue()
 
+	watching_paths: set[Path]=set()
 
-	def file_watcher_thread()->None:
-		# this function will be called in a new thread
-		# whenever something changed it should push `None` into the queue
-		# the file args.filename and entries in args.extra_watch will be watched
-
-		class Handler(watchdog.events.FileSystemEventHandler):
-			def on_any_event(self, event)->None:
+	class Handler(watchdog.events.FileSystemEventHandler):
+		def check_watching_path(self, path: str)->None:
+			# this function is called whenever something in path is changed.
+			# because we may watch the whole directory (see below) we need to check
+			# if the path is actually the file we want to watch
+			if Path(path) in watching_paths:
 				q.put(None)
 
-		observer = watchdog.observers.Observer()
-		for path in args.extra_watch+[Path(args.filename)]:
-			observer.schedule(Handler(), str(path), recursive=False)
-		observer.start()
+		def on_created(self, event)->None:
+			self.check_watching_path(event.src_path)
 
-	# start a thread to watch the file
-	thread=threading.Thread(target=file_watcher_thread)
-	thread.start()
+		def on_modified(self, event)->None:
+			self.check_watching_path(event.src_path)
 
+		def on_moved(self, event)->None:
+			self.check_watching_path(event.dest_path)
+
+
+	observer = watchdog.observers.Observer()
+	for path in args.extra_watch+[Path(args.filename)]:
+		# we use the same trick as in when-changed package,
+		# instead of watching the file we watch its parent,
+		# because editor may delete and recreate the file
+		# also need to watch the realpath instead of possibly a symlink
+		realpath=path.resolve()
+		watching_paths.add(realpath)
+		observer.schedule(Handler(),
+					realpath if realpath.is_dir() else realpath.parent,
+					recursive=True)
+	observer.start()
 
 	try:
 		while True:
