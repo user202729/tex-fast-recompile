@@ -283,8 +283,12 @@ def main(args=None)->None:
 						# this must not error out
 						shutil.copyfile(generated_log_path, args.copy_log)
 
-					if args.success_cmd:
-						subprocess.run(args.success_cmd, shell=True, check=True)
+					if process.returncode!=0:
+						if args.failure_cmd:
+							subprocess.run(args.failure_cmd, shell=True, check=True)
+					else:
+						if args.success_cmd:
+							subprocess.run(args.success_cmd, shell=True, check=True)
 
 			except PreambleChangedError:
 				if args.abort_on_preamble_change:
