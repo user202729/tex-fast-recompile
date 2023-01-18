@@ -109,6 +109,11 @@ Note that:
 * There must be nothing else on the line that contains `\fastrecompileendpreamble`.
 * SyncTeX features of the text part in the "preamble" may not be correct.
 
+### Internal note
+
+The module used to create a temporary file instead of `\input` the original file with `begindocument/end` hook,
+but with the `--recorder` flag then `\currfileabspath` will be wrong in the preamble,
+and `@@input` does not update the file name when the actual file is `\input`-ed.
 
 ### How does it work?
 
