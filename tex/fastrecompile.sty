@@ -1,6 +1,18 @@
 \ProvidesExplPackage{fastrecompile}{2023/01/13}{0.1.0}{Helper library to speed up LaTeX compilation}
 
 
+\msg_new:nnn { fastrecompile } { end-preamble-duplicate } {
+  Something~is~wrong.~If~\string\fastrecompileendpreamble\space is~used,~it~must~appear~in~a~separate~line.
+}
+\msg_new:nnn { fastrecompile } { end-preamble-not-main-file } {
+  This~cannot~happen.~
+  File~contain~\string\fastrecompileendpreamble\space command~must~be~main~file~and~contain~\string\end{document}~line.
+}
+\msg_new:nnn { fastrecompile } { duplicate-set-implicit-preamble } {
+  ???
+}
+
+
 % Read the file name from the terminal and stores it in \__fast_recompile_file_name_str.
 \cs_new_protected:Npn \__fast_recompile_read_str: {
   \int_set:Nn \l_tmpa_int { \interactionmode }
@@ -11,13 +23,14 @@
 
 
 % Read a line from standard input then \input from it. (using \input instead of the primitive)
-\NewDocumentCommand \fastrecompileinputreadline {} {
+\cs_new_protected:Npn \fastrecompileinputreadline {
   \__fast_recompile_read_str:
   \input {\__fast_recompile_file_name_str}
 }
 
 
-\NewDocumentCommand \fastrecompileendpreamble {} {
+\cs_new_protected:Npn \__fast_recompile_end_preamble: {
+  \cs_gset_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble_duplicate_usage:
 
   % first read a line from the terminal (to wait for a file to change)
   % conveniently the parent process also write the file name in this line
@@ -48,11 +61,24 @@
   \int_set:Nn \l_tmpa_int { \inputlineno-1 }  % executing \@@input will change the \inputlineno
   \expandafter \__fast_recompile_gobble_lines:
     \tex_input:D { \__fast_recompile_file_name_str }
-    \errmessage { This~cannot~happen.~
-      File~contain~\string\fastrecompileendpreamble~command~
-      must~be~main~file. }
+    \msg_error:nn { fastrecompile } { end-preamble-not-main-file }
     \stop
 }
+
+\cs_new_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble:
+
+\cs_gset_protected:Npn \__fast_recompile_end_preamble_duplicate_usage: {
+  \msg_error:nn { fastrecompile } { end-preamble-duplicate }
+}
+
+\cs_new_protected:Npn \fastrecompilesetimplicitpreamble {
+  \AddToHook {begindocument/end} [fastrecompile] { \__fast_recompile_end_preamble: }
+  \cs_gset_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble_duplicate_usage:
+  \cs_gset_protected:Npn \fastrecompilesetimplicitpreamble {
+    \msg_error:nn { fastrecompile } { duplicate-set-implicit-preamble }
+  }
+}
+
 
 \cs_new_protected:Npn \__fast_recompile_gobble_lines: {
   \__fast_recompile_gobble_lines:fw { \int_use:N \l_tmpa_int }

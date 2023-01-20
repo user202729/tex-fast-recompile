@@ -155,7 +155,7 @@ def main(args=None)->None:
 				assert '"' not in args.filename
 				compiling_filename=(
 					r"\RequirePackage{fastrecompile}"
-					r"\AddToHook{begindocument/end}[fastrecompile]{\fastrecompileendpreamble}"
+					r"\fastrecompilesetimplicitpreamble"
 					r"\fastrecompileinputreadline"
 					)
 			else:
