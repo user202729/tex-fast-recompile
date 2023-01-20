@@ -3,49 +3,41 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from dataclasses import dataclass
 
-def extract_preamble(text: str)->list[str]:
+@dataclass
+class Preamble:
+	content: list[str]
+	implicit: bool  # if implicit, it ends at (and includes) \begin{document} line; otherwise, it ends at (and includes) \fastrecompileendpreamble line
+
+def extract_preamble(text: str)->Preamble:
 	# split into lines
 	lines=text.splitlines()
 
 	search_str=r"\fastrecompileendpreamble"
 
 	# find the line with content identical to the search string
+	implicit: bool
 	try:
 		index=lines.index(search_str)
+		implicit=False
 	except ValueError:
-		raise RuntimeError(r"File does not contain \fastrecompileendpreamble line!") from None
+		try:
+			search_str=r"\begin{document}"
+			index=lines.index(search_str)
+			implicit=True
+		except ValueError:
+			raise RuntimeError(r"File contains neither \fastrecompileendpreamble nor \begin{document} line!") from None
 
 	# ensure there's only one occurrence of the search string
 	try:
 		lines.index(search_str,index+1)
-		raise RuntimeError(r"File contains multiple \fastrecompileendpreamble lines!")
+		raise RuntimeError(f"File contains multiple {search_str} lines!")
 	except ValueError:
 		pass
 
 	# return the preamble
-	return lines[:index]
-
-
-def add_package_and_end_preamble_line(text: str)->tuple[list[str], str]:
-	r"""
-	add the \fastrecompileendpreamble command right after the line with \begin{document}
-	return the preamble (first return value) and the modified source code (second return value)
-
-	the line numbers in the modified source code must be the same as in the original source code
-	"""
-	lines=text.splitlines()
-
-	# first ensure it does not already have any \fastrecompileendpreamble lines
-	if r"\fastrecompileendpreamble" in lines:
-		raise RuntimeError(r"File already contains \fastrecompileendpreamble line! Consider removing the --add-package option.")
-
-	try:
-		index=lines.index(r"\begin{document}")
-	except ValueError:
-		raise RuntimeError(r"File does not contain \begin{document} line!") from None
-	lines[index]+=r"\fastrecompileendpreamble"
-	return lines[:index], r"\RequirePackage{fastrecompile}" + "\n".join(lines)
+	return Preamble(lines[:index], implicit)
 
 
 class PreambleChangedError(Exception):
@@ -78,10 +70,6 @@ def get_parser()->argparse.ArgumentParser:
 					 default=True)
 	parser.add_argument("--no-close-stdin", action="store_false", dest="close-stdin", help="Reverse of --close-stdin. Currently not very well-supported.")
 	parser.add_argument("--copy-output", type=Path, help="After compilation finishes, copy the output file to the given path")
-	parser.add_argument("--add-package", action="store_true", default=True,
-					 help=r"Automatically patch the source code to add \RequirePackage{fastrecompile} and \fastrecompileendpreamble to the file. "
-					 "Use this option if and only if the file does not already have these lines.")
-	parser.add_argument("--no-add-package", action="store_false", dest="add-package", help="Reverse of --add-package.")
 	parser.add_argument("--copy-log", type=Path,
 					 help="After compilation finishes, copy the log file to the given path. "
 					 "If you want to read the log file, you must use this option and read it at the target path.")
@@ -102,39 +90,6 @@ def main(args=None)->None:
 	if jobname is None:
 		jobname=Path(args.filename).stem
 
-	# compiling_filename is the actual filename to be compiled, which might be the provided filename
-	# or a patched source code (startings with `\`) in case --add-package is provided
-
-	if args.add_package:
-		assert '"' not in args.filename
-		compiling_filename=(
-			r"\RequirePackage{fastrecompile}"
-			r"\AddToHook{begindocument/end}[fastrecompile]{\fastrecompileendpreamble}"
-			r"\fastrecompileinputreadline"
-			)
-	else:
-		compiling_filename=args.filename
-
-
-
-	# build the command
-	command=[args.executable]
-	if args.jobname is not None or args.add_package:  # if add_package then we must explicitly specify the jobname otherwise it will be the temporary file name
-		command.append("--jobname="+jobname)
-	if args.output_directory is not None:
-		command.append("--output-directory="+args.output_directory)
-	if args.shell_escape:
-		command.append("--shell-escape")
-	if getattr(args, "8bit"):
-		command.append("--8bit")
-	if args.recorder:
-		command.append("--recorder")
-	if args.extra_args:
-		command+=args.extra_args
-	command.append(compiling_filename)
-
-	
-
 	output_directory=args.output_directory
 	if output_directory is None:
 		output_directory="."
@@ -143,10 +98,10 @@ def main(args=None)->None:
 	generated_pdf_path=(Path(output_directory)/jobname).with_suffix(".pdf")
 	generated_log_path=(Path(output_directory)/jobname).with_suffix(".log")
 
-	if args.copy_output is not None and args.copy_output==generated_pdf_path:
+	if args.copy_output==generated_pdf_path:
 		raise RuntimeError("The output file to copy to must not be the same as the generated output file!")
 
-	if args.copy_log is not None and args.copy_log==generated_log_path:
+	if args.copy_log==generated_log_path:
 		raise RuntimeError("The log file to copy to must not be the same as the generated log file!")
 
 	import watchdog  # type: ignore
@@ -189,16 +144,42 @@ def main(args=None)->None:
 		watching_paths.add(realpath)
 		observer.schedule(Handler(),
 					realpath if realpath.is_dir() else realpath.parent,
-					recursive=True)
+					recursive=False)  # must disable recursive otherwise it may take a very long time
 	observer.start()
 
 	try:
 		while True:
+			preamble=extract_preamble(Path(args.filename).read_text())
 
-			if args.add_package:
-				preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
+			if preamble.implicit:
+				assert '"' not in args.filename
+				compiling_filename=(
+					r"\RequirePackage{fastrecompile}"
+					r"\AddToHook{begindocument/end}[fastrecompile]{\fastrecompileendpreamble}"
+					r"\fastrecompileinputreadline"
+					)
 			else:
-				preamble=extract_preamble(Path(args.filename).read_text())
+				compiling_filename=(
+					r"\RequirePackage{fastrecompile}"
+					r"\fastrecompileinputreadline"
+					)
+
+
+			# build the command
+			command=[args.executable]
+			command.append("--jobname="+jobname)
+			if args.output_directory is not None:
+				command.append("--output-directory="+args.output_directory)
+			if args.shell_escape:
+				command.append("--shell-escape")
+			if getattr(args, "8bit"):
+				command.append("--8bit")
+			if args.recorder:
+				command.append("--recorder")
+			if args.extra_args:
+				command+=args.extra_args
+			command.append(compiling_filename)
+
 
 			first_iteration=True
 			try:
@@ -209,10 +190,9 @@ def main(args=None)->None:
 						assert process.stdin is not None
 						assert process.stdout is not None
 
-						if args.add_package:
-							# the inserted command \fastrecompileinputreadline need to read the filename from stdin
-							process.stdin.write(args.filename.encode('u8') + b"\n")
-							process.stdin.flush()
+						# the inserted command \fastrecompileinputreadline need to read the filename from stdin
+						process.stdin.write(args.filename.encode('u8') + b"\n")
+						process.stdin.flush()
 
 						# wait until something is available in the queue
 						if first_iteration:
@@ -230,15 +210,8 @@ def main(args=None)->None:
 							q.get()
 
 						# check if the preamble is still the same
-						if args.add_package:
-							new_preamble, modified_code=add_package_and_end_preamble_line(Path(args.filename).read_text())
-							if preamble!=new_preamble:
-								raise PreambleChangedError()
-							# we don't need to write the modified_code as we only cares about the preamble in the temporary file
-							# and the preamble is already the same as the one in the temporary file
-						else:
-							if preamble!=extract_preamble(Path(args.filename).read_text()):
-								raise PreambleChangedError()
+						if preamble!=extract_preamble(Path(args.filename).read_text()):
+							raise PreambleChangedError()
 
 						if process.poll() is not None:
 							sys.stdout.buffer.write(process.stdout.read())

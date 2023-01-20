@@ -59,6 +59,16 @@ let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 
 ## Advanced notes
 
+### Explicitly specify preamble ending location
+
+You can put `\fastrecompileendpreamble` on a single line to mark the end of the "fixed preamble" part.
+
+Note that:
+
+* `\fastrecompileendpreamble` must appear at most once in the *main* file.
+* There must be nothing else on the line that contains `\fastrecompileendpreamble`.
+* SyncTeX features of the text part in the "preamble" may not be correct.
+
 ### Extra note
 
 If you want to read the log file, refer to the help of `--copy-log` option.
@@ -81,39 +91,15 @@ It's possible to print out some content in the "preamble" part, but if you do so
 
 you must also use the `--copy-output` option if you want to view the resulting PDF.
 
-### `--no-add-package` mode
-
-Behind the scene, some magic is done on your TeX file.
-
-If you want to do that manually, you need to modify your TeX file as follows:
-
-```tex
-\documentclass{article}
-\usepackage{fastrecompile}  % manually add the package here
-% other preamble lines...
-\begin{document}
-
-% put the line below where the preamble ends:
-\fastrecompileendpreamble
-
-...
-
-\end{document}
-```
-
-then compile your document with `--no-add-package` flag added.
-
-Note that:
-
-* `\fastrecompileendpreamble` must appear exactly once in the *main* file.
-* There must be nothing else on the line that contains `\fastrecompileendpreamble`.
-* SyncTeX features of the text part in the "preamble" may not be correct.
-
 ### Internal note
 
 The module used to create a temporary file instead of `\input` the original file with `begindocument/end` hook,
 but with the `--recorder` flag then `\currfileabspath` will be wrong in the preamble,
 and `@@input` does not update the file name when the actual file is `\input`-ed.
+
+TODO:
+
+* wrap into a reusable Python library
 
 ### How does it work?
 
