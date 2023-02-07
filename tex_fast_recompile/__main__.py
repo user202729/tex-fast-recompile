@@ -76,6 +76,7 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--abort-on-preamble-change", action="store_true", help="Abort compilation if the preamble changed.")
 	parser.add_argument("--continue-on-preamble-change", action="store_false", dest="abort-on-preamble-change", help="Continue compilation if the preamble changed. Reverse of --abort-on-preamble-change.")
 	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
+	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation.")
 	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")
 	parser.add_argument("--failure-cmd", help="Command to run after compilation fails. (currently unsupported)")
 	parser.add_argument("filename", help="The filename to compile")
@@ -213,6 +214,7 @@ def main(args=None)->None:
 						if preamble!=extract_preamble(Path(args.filename).read_text()):
 							raise PreambleChangedError()
 
+
 						if process.poll() is not None:
 							sys.stdout.buffer.write(process.stdout.read())
 							sys.stdout.buffer.flush()
@@ -224,6 +226,9 @@ def main(args=None)->None:
 						process.stdin.flush()
 						if args.close_stdin:
 							process.stdin.close()
+
+						if args.compiling_cmd:
+							subprocess.run(args.compiling_cmd, shell=True, check=True)
 
 						# start a new thread to copy process stdout to sys.stdout
 						# the copy should be done such that partially-written lines get copied immediately when they're written
@@ -243,7 +248,6 @@ def main(args=None)->None:
 
 						# wait for the process to finish
 						process.wait()
-
 					finally:
 						process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
 

@@ -59,9 +59,9 @@ def main()->None:
 		"$failure_cmd = ($failure_cmd ? $failure_cmd . " ; " : "") . "echo vimtex_compiler_callback_failure""
 		"""
 		for part_before, part_after, arg_name in (
-				('$compiling_cmd = ($compiling_cmd ? $compiling_cmd . " ; " : "") . "', '"', None),
-				('$success_cmd = ($success_cmd ? $success_cmd . " ; " : "") . "', '"', "--success-cmd"),
-				('$failure_cmd = ($failure_cmd ? $failure_cmd . " ; " : "") . "', '"', "--failure-cmd"),
+				('$compiling_cmd = ($compiling_cmd ? $compiling_cmd . " ; " : "") . "', '"', "--compiling-cmd"),
+				('$success_cmd = ($success_cmd ? $success_cmd . " ; " : "") . "',       '"', "--success-cmd"),
+				('$failure_cmd = ($failure_cmd ? $failure_cmd . " ; " : "") . "',       '"', "--failure-cmd"),
 				):
 			if arg.startswith(part_before) and arg.endswith(part_after):
 				if arg_name is not None:
