@@ -104,10 +104,6 @@ The module used to create a temporary file instead of `\input` the original file
 but with the `--recorder` flag then `\currfileabspath` will be wrong in the preamble,
 and `@@input` does not update the file name when the actual file is `\input`-ed.
 
-TODO:
-
-* wrap into a reusable Python library
-
 ### How does it work?
 
 The principle is very simple. Notice that while the user want fast refresh, the file does not change very frequently.
