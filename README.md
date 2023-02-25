@@ -70,6 +70,12 @@ Note that:
 * There must be nothing else on the line that contains `\fastrecompileendpreamble`.
 * SyncTeX features of the text part in the "preamble" may not be correct.
 
+Normally, this is assumed to be right before the `\begin{document}` line (or `\AtEndPreamble`),
+but if you either
+* use the `--copy-output` option (and only read the copied output), or
+* there's no package that outputs something at the start of the document (such as `hyperref`),
+then you can move the `\fastrecompileendpreamble` to after the `\begin{document}` line.
+
 ### Extra note
 
 If you want to read the log file, refer to the help of `--copy-log` option.

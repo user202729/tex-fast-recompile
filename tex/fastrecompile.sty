@@ -29,7 +29,8 @@
 }
 
 
-\cs_new_protected:Npn \__fast_recompile_end_preamble: {
+% #1: the "line offset" which should be 2 if used from within AtEndPreamble or 1 if used from explicit \fastrecompileendpreamble
+\cs_new_protected:Npn \__fast_recompile_end_preamble:n #1 {
   \cs_gset_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble_duplicate_usage:
 
   % first read a line from the terminal (to wait for a file to change)
@@ -58,21 +59,21 @@
   \endlinechar 13      % should already be true but just in case
   \catcode `\^^M \active
 
-  \int_set:Nn \l_tmpa_int { \inputlineno-1 }  % executing \@@input will change the \inputlineno
+  \int_set:Nn \l_tmpa_int { \inputlineno-#1 }  % executing \@@input will change the \inputlineno
   \expandafter \__fast_recompile_gobble_lines:
     \tex_input:D { \__fast_recompile_file_name_str }
     \msg_error:nn { fastrecompile } { end-preamble-not-main-file }
     \stop
 }
 
-\cs_new_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble:
+\cs_new_protected:Npn \fastrecompileendpreamble { \__fast_recompile_end_preamble:n {1} }
 
 \cs_gset_protected:Npn \__fast_recompile_end_preamble_duplicate_usage: {
   \msg_error:nn { fastrecompile } { end-preamble-duplicate }
 }
 
 \cs_new_protected:Npn \fastrecompilesetimplicitpreamble {
-  \AddToHook {begindocument/end} [fastrecompile] { \__fast_recompile_end_preamble: }
+  \AddToHook {begindocument/before} [fastrecompile] { \__fast_recompile_end_preamble:n {2} }
   \cs_gset_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble_duplicate_usage:
   \cs_gset_protected:Npn \fastrecompilesetimplicitpreamble {
     \msg_error:nn { fastrecompile } { duplicate-set-implicit-preamble }
