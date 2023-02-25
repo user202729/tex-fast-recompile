@@ -47,7 +47,6 @@ Run `tex_fast_recompile_latexmk --help` to view the available options. (should b
 For VimTeX usage, putting the following configuration in `.vimrc` usually suffices:
 
 ```vim
-let g:vimtex_compiler_method='latexmk'
 let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 ```
 
@@ -56,6 +55,8 @@ let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 * Any file `\input` in the preamble must not be changed. (when the preamble changes, the program will automatically detect that)
 * You must not read from the terminal anywhere in the preamble, such as with functions `\read -1 to ...` or `\ior_get_term:nN ...`.
 (if you're not sure what this mean, you should be safe)
+* The latexmk emulation mode does not necessarily recompile the file sufficiently many times when references changed.
+(as such it might be convenient to use `silence` package to suppress the `rerunfilecheck` warnings.)
 
 ## Advanced notes
 
