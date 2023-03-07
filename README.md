@@ -18,8 +18,12 @@ Refer to https://tex.stackexchange.com/q/1137/250119 for installation instructio
 
 (currently the TeX package is not available on CTAN)
 
-
 ## Usage
+
+### Note for Vim users
+
+It's recommended to disable `writebackup`, or set `backupcopy=yes` otherwise update performance might not be very fast.
+(I still haven't figured out why.)
 
 ### Normal mode
 
@@ -103,6 +107,8 @@ you must also use the `--copy-output` option if you want to view the resulting P
 The module used to create a temporary file instead of `\input` the original file with `begindocument/end` hook,
 but with the `--recorder` flag then `\currfileabspath` will be wrong in the preamble,
 and `@@input` does not update the file name when the actual file is `\input`-ed.
+
+With the handler moved to `\AtEndPreamble` instead of `\AtBeginDocument` there are some spurious messages... (not critical)
 
 ### How does it work?
 
