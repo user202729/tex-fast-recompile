@@ -9,6 +9,9 @@ from typing import Iterator
 import subprocess
 import threading
 import queue
+import shutil
+import sys
+import time
 
 @dataclass
 class Preamble:
@@ -175,6 +178,8 @@ class CompilationDaemonLowLevel:
 					# wait for recompile() call
 					yield
 
+					start_time=time.time()
+
 					# check if the preamble is still the same
 					if preamble!=extract_preamble(Path(args.filename).read_text()):
 						raise PreambleChangedError()
@@ -198,7 +203,6 @@ class CompilationDaemonLowLevel:
 					# start a new thread to copy process stdout to sys.stdout
 					# the copy should be done such that partially-written lines get copied immediately when they're written
 					def copy_stdout_work()->None:
-						import sys
 						while True:
 							assert process.stdout is not None
 							# this is a bit inefficient in that it reads one byte at a time
@@ -218,7 +222,8 @@ class CompilationDaemonLowLevel:
 
 				copy_stdout_thread.join()
 
-				import shutil
+				sys.stdout.write(f"Time taken: {time.time()-start_time:.3f}s\n")
+
 
 
 				if args.copy_output is not None:
@@ -346,7 +351,6 @@ def main(args=None)->None:
 		sys.stdout.write("\n"*args.num_separation_lines)
 
 		# wait for the specified delay
-		import time
 		time.sleep(args.extra_delay)
 
 		# empty out the queue
