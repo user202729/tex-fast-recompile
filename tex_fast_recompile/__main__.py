@@ -10,7 +10,16 @@ class Preamble:
 	content: list[str]
 	implicit: bool  # if implicit, it ends at (and includes) \begin{document} line; otherwise, it ends at (and includes) \fastrecompileendpreamble line
 
+
+class NoPreambleError(Exception):
+	pass
+
+
 def extract_preamble(text: str)->Preamble:
+	"""
+	Extract preamble information from text. Might raise NoPreambleError(error message: str) if fail.
+	"""
+
 	# split into lines
 	lines=text.splitlines()
 
@@ -27,12 +36,12 @@ def extract_preamble(text: str)->Preamble:
 			index=lines.index(search_str)
 			implicit=True
 		except ValueError:
-			raise RuntimeError(r"File contains neither \fastrecompileendpreamble nor \begin{document} line!") from None
+			raise NoPreambleError(r"File contains neither \fastrecompileendpreamble nor \begin{document} line") from None
 
 	# ensure there's only one occurrence of the search string
 	try:
 		lines.index(search_str,index+1)
-		raise RuntimeError(f"File contains multiple {search_str} lines!")
+		raise NoPreambleError(f"File contains multiple {search_str} lines")
 	except ValueError:
 		pass
 
