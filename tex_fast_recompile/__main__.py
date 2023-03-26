@@ -4,6 +4,11 @@ import argparse
 import sys
 from pathlib import Path
 from dataclasses import dataclass
+import types
+from typing import Iterator
+import subprocess
+import threading
+import queue
 
 @dataclass
 class Preamble:
@@ -60,7 +65,7 @@ def get_parser()->argparse.ArgumentParser:
 								)
 	parser.add_argument("executable", help="The executable to run, such as pdflatex")
 	parser.add_argument("--jobname", help="The jobname")
-	parser.add_argument("--output-directory", help="The output directory")
+	parser.add_argument("--output-directory", type=Path, help="The output directory")
 	parser.add_argument("--shell-escape",action="store_true", help="Enable shell escape")
 	parser.add_argument("--8bit",action="store_true", help="Same as --8bit to engines")
 	parser.add_argument("--recorder", action="store_true", help="Same as --recorder to engines")
@@ -92,34 +97,210 @@ def get_parser()->argparse.ArgumentParser:
 	return parser
 
 
+@dataclass
+class CompilationDaemonLowLevel:
+	"""
+	Use like this:
+
+	```
+	daemon = CompilationDaemonLowLevel(...)  # may do something but does not compile
+	daemon.recompile()  # recompile
+	...
+	```
+
+	May raise `NoPreambleError` or `PreambleChangedError`.
+	The constructor never raises `NoPreambleError`.
+	"""
+
+	args: types.SimpleNamespace
+
+	def __post_init__(self)->None:
+		self._recompile_iter = self._recompile_iter_func()
+		self.recompile()  # this makes the function run to the first time it yields
+
+	def recompile(self)->None:
+		next(self._recompile_iter)
+
+	def _recompile_iter_func(self)->Iterator:
+		args=self.args
+
+		while True:
+			try:
+				preamble=extract_preamble(Path(args.filename).read_text())
+			except NoPreambleError:
+				yield
+				raise
+
+			if preamble.implicit:
+				assert '"' not in args.filename
+				compiling_filename=(
+					r"\RequirePackage{fastrecompile}"
+					r"\fastrecompilesetimplicitpreamble"
+					r"\fastrecompileinputreadline"
+					)
+			else:
+				compiling_filename=(
+					r"\RequirePackage{fastrecompile}"
+					r"\fastrecompileinputreadline"
+					)
+
+
+			# build the command
+			command=[args.executable]
+			command.append("--jobname="+args.jobname)
+			if args.output_directory is not None:
+				command.append("--output-directory="+str(args.output_directory))
+			if args.shell_escape:
+				command.append("--shell-escape")
+			if getattr(args, "8bit"):
+				command.append("--8bit")
+			if args.recorder:
+				command.append("--recorder")
+			if args.extra_args:
+				command+=args.extra_args
+			command.append(compiling_filename)
+
+
+			while True:
+				try:
+
+					process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+					assert process.stdin is not None
+					assert process.stdout is not None
+
+					# the inserted command \fastrecompileinputreadline need to read the filename from stdin
+					process.stdin.write(args.filename.encode('u8') + b"\n")
+					process.stdin.flush()
+
+					# wait for recompile() call
+					yield
+
+					# check if the preamble is still the same
+					if preamble!=extract_preamble(Path(args.filename).read_text()):
+						raise PreambleChangedError()
+
+
+					if process.poll() is not None:
+						sys.stdout.buffer.write(process.stdout.read())
+						sys.stdout.buffer.flush()
+						raise RuntimeError("Process exited while processing the preamble")
+
+					# send one line to the process to wake it up
+					# (before this step, process stdout must be suppressed)
+					process.stdin.write(args.filename.encode('u8') + b"\n")
+					process.stdin.flush()
+					if args.close_stdin:
+						process.stdin.close()
+
+					if args.compiling_cmd:
+						subprocess.run(args.compiling_cmd, shell=True, check=True)
+
+					# start a new thread to copy process stdout to sys.stdout
+					# the copy should be done such that partially-written lines get copied immediately when they're written
+					def copy_stdout_work()->None:
+						import sys
+						while True:
+							assert process.stdout is not None
+							# this is a bit inefficient in that it reads one byte at a time
+							# but I don't know how to do it better
+							content=process.stdout.read(1)
+							if content==b"":
+								break
+							sys.stdout.buffer.write(content)
+							sys.stdout.buffer.flush()
+					copy_stdout_thread=threading.Thread(target=copy_stdout_work)
+					copy_stdout_thread.start()
+
+					# wait for the process to finish
+					process.wait()
+				finally:
+					process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
+
+				copy_stdout_thread.join()
+
+				import shutil
+
+
+				if args.copy_output is not None:
+					try:
+						shutil.copyfile(args.generated_pdf_path, args.copy_output)
+					except FileNotFoundError:
+						pass
+
+				if args.copy_log is not None:
+					# this must not error out
+					shutil.copyfile(args.generated_log_path, args.copy_log)
+
+				if process.returncode!=0:
+					if args.failure_cmd:
+						subprocess.run(args.failure_cmd, shell=True, check=True)
+				else:
+					if args.success_cmd:
+						subprocess.run(args.success_cmd, shell=True, check=True)
+
+
+@dataclass
+class CompilationDaemon:
+	"""
+	Use similar to CompilationDaemonLowLevel but never raises error.
+	"""
+	args: types.SimpleNamespace
+
+	def __post_init__(self)->None:
+		self._recompile_iter = self._recompile_iter_func()
+		self.recompile()  # this makes the function run to the first time it yields
+
+	def recompile(self)->None:
+		next(self._recompile_iter)
+
+	def _recompile_iter_func(self)->Iterator:
+		args=self.args
+		immediately_recompile=False
+		while True:
+			daemon=CompilationDaemonLowLevel(args)
+
+			try:
+				while True:
+					if immediately_recompile: immediately_recompile=False
+					else: yield
+					daemon.recompile()
+
+			except PreambleChangedError:
+				if args.abort_on_preamble_change:
+					break
+				else:
+					sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
+					immediately_recompile=True
+
+			except NoPreambleError as e:
+				sys.stdout.write(f"! {e.args[0]}.\n")
+				sys.stdout.flush()
+				yield
+				immediately_recompile=True
+
+
 def main(args=None)->None:
 	if args is None:
 		args=get_parser().parse_args()
 
-	jobname=args.jobname
-	if jobname is None:
-		jobname=Path(args.filename).stem
+	if args.jobname is None:
+		args.jobname=Path(args.filename).stem
 
-	output_directory=args.output_directory
-	if output_directory is None:
-		output_directory="."
-	output_directory=Path(output_directory)
+	if args.output_directory is None:
+		args.output_directory=Path(".")
 
-	generated_pdf_path=(Path(output_directory)/jobname).with_suffix(".pdf")
-	generated_log_path=(Path(output_directory)/jobname).with_suffix(".log")
+	args.generated_pdf_path=(args.output_directory/args.jobname).with_suffix(".pdf")
+	args.generated_log_path=(args.output_directory/args.jobname).with_suffix(".log")
 
-	if args.copy_output==generated_pdf_path:
+	if args.copy_output==args.generated_pdf_path:
 		raise RuntimeError("The output file to copy to must not be the same as the generated output file!")
 
-	if args.copy_log==generated_log_path:
+	if args.copy_log==args.generated_log_path:
 		raise RuntimeError("The log file to copy to must not be the same as the generated log file!")
 
 	import watchdog  # type: ignore
 	import watchdog.events  # type: ignore
 	import watchdog.observers  # type: ignore
-	import subprocess
-	import threading
-	import queue
 
 	# create a queue to wake up the main thread whenever something changed
 	q: queue.Queue[None]=queue.Queue()
@@ -157,141 +338,22 @@ def main(args=None)->None:
 					recursive=False)  # must disable recursive otherwise it may take a very long time
 	observer.start()
 
-	try:
-		while True:
-			preamble=extract_preamble(Path(args.filename).read_text())
+	daemon=CompilationDaemon(args)
+	daemon.recompile()
 
-			if preamble.implicit:
-				assert '"' not in args.filename
-				compiling_filename=(
-					r"\RequirePackage{fastrecompile}"
-					r"\fastrecompilesetimplicitpreamble"
-					r"\fastrecompileinputreadline"
-					)
-			else:
-				compiling_filename=(
-					r"\RequirePackage{fastrecompile}"
-					r"\fastrecompileinputreadline"
-					)
+	while True:
+		q.get()
+		sys.stdout.write("\n"*args.num_separation_lines)
 
+		# wait for the specified delay
+		import time
+		time.sleep(args.extra_delay)
 
-			# build the command
-			command=[args.executable]
-			command.append("--jobname="+jobname)
-			if args.output_directory is not None:
-				command.append("--output-directory="+args.output_directory)
-			if args.shell_escape:
-				command.append("--shell-escape")
-			if getattr(args, "8bit"):
-				command.append("--8bit")
-			if args.recorder:
-				command.append("--recorder")
-			if args.extra_args:
-				command+=args.extra_args
-			command.append(compiling_filename)
+		# empty out the queue
+		while not q.empty():
+			q.get()
 
-
-			first_iteration=True
-			try:
-				while True:
-					try:
-
-						process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-						assert process.stdin is not None
-						assert process.stdout is not None
-
-						# the inserted command \fastrecompileinputreadline need to read the filename from stdin
-						process.stdin.write(args.filename.encode('u8') + b"\n")
-						process.stdin.flush()
-
-						# wait until something is available in the queue
-						if first_iteration:
-							first_iteration=False
-						else:
-							q.get()
-							sys.stdout.write("\n"*args.num_separation_lines)
-
-							# wait for the specified delay
-							import time
-							time.sleep(args.extra_delay)
-
-						# empty out the queue
-						while not q.empty():
-							q.get()
-
-						# check if the preamble is still the same
-						if preamble!=extract_preamble(Path(args.filename).read_text()):
-							raise PreambleChangedError()
-
-
-						if process.poll() is not None:
-							sys.stdout.buffer.write(process.stdout.read())
-							sys.stdout.buffer.flush()
-							raise RuntimeError("Process exited while processing the preamble")
-
-						# send one line to the process to wake it up
-						# (before this step, process stdout must be suppressed)
-						process.stdin.write(args.filename.encode('u8') + b"\n")
-						process.stdin.flush()
-						if args.close_stdin:
-							process.stdin.close()
-
-						if args.compiling_cmd:
-							subprocess.run(args.compiling_cmd, shell=True, check=True)
-
-						# start a new thread to copy process stdout to sys.stdout
-						# the copy should be done such that partially-written lines get copied immediately when they're written
-						def copy_stdout_work()->None:
-							import sys
-							while True:
-								assert process.stdout is not None
-								# this is a bit inefficient in that it reads one byte at a time
-								# but I don't know how to do it better
-								content=process.stdout.read(1)
-								if content==b"":
-									break
-								sys.stdout.buffer.write(content)
-								sys.stdout.buffer.flush()
-						copy_stdout_thread=threading.Thread(target=copy_stdout_work)
-						copy_stdout_thread.start()
-
-						# wait for the process to finish
-						process.wait()
-					finally:
-						process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
-
-					copy_stdout_thread.join()
-
-					import shutil
-
-
-					if args.copy_output is not None:
-						try:
-							shutil.copyfile(generated_pdf_path, args.copy_output)
-						except FileNotFoundError:
-							pass
-
-					if args.copy_log is not None:
-						# this must not error out
-						shutil.copyfile(generated_log_path, args.copy_log)
-
-					if process.returncode!=0:
-						if args.failure_cmd:
-							subprocess.run(args.failure_cmd, shell=True, check=True)
-					else:
-						if args.success_cmd:
-							subprocess.run(args.success_cmd, shell=True, check=True)
-
-			except PreambleChangedError:
-				if args.abort_on_preamble_change:
-					break
-				else:
-					sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
-					continue
-				
-
-	finally:
-		pass
+		daemon.recompile()
 
 
 if __name__ == "__main__":
