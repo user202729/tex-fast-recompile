@@ -78,7 +78,7 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
 	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation.")
 	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")
-	parser.add_argument("--failure-cmd", help="Command to run after compilation fails. (currently unsupported)")
+	parser.add_argument("--failure-cmd", help="Command to run after compilation fails.")
 	parser.add_argument("filename", help="The filename to compile")
 	return parser
 

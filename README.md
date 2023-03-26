@@ -60,7 +60,17 @@ let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 * You must not read from the terminal anywhere in the preamble, such as with functions `\read -1 to ...` or `\ior_get_term:nN ...`.
 (if you're not sure what this mean, you should be safe)
 * The latexmk emulation mode does not necessarily recompile the file sufficiently many times when references changed.
-(as such it might be convenient to use `silence` package to suppress the `rerunfilecheck` warnings.)
+(as such it might be convenient to use `silence` package to suppress the `rerunfilecheck` warnings
+such as:
+
+```latex
+\WarningFilter{latex}{Reference `}
+\WarningFilter{latex}{There were undefined references}
+\WarningFilter{latex}{Label(s) may have changed}
+\WarningFilter{rerunfilecheck}{}
+```
+
+While the first filter may be overly broad, for the purpose of fast preview it isn't too important.)
 
 ## Advanced notes
 
