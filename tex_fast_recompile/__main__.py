@@ -184,18 +184,16 @@ class CompilationDaemonLowLevel:
 					if preamble!=extract_preamble(Path(args.filename).read_text()):
 						raise PreambleChangedError()
 
-
-					if process.poll() is not None:
-						sys.stdout.buffer.write(process.stdout.read())
-						sys.stdout.buffer.flush()
-						raise RuntimeError("Process exited while processing the preamble")
-
 					# send one line to the process to wake it up
 					# (before this step, process stdout must be suppressed)
-					process.stdin.write(args.filename.encode('u8') + b"\n")
-					process.stdin.flush()
-					if args.close_stdin:
-						process.stdin.close()
+					try:
+						process.stdin.write(args.filename.encode('u8') + b"\n")
+						process.stdin.flush()
+						if args.close_stdin:
+							process.stdin.close()
+					except BrokenPipeError:
+						# might happen if the process exits before reaching the \fastrecompileendpreamble line
+						pass
 
 					if args.compiling_cmd:
 						subprocess.run(args.compiling_cmd, shell=True, check=True)
