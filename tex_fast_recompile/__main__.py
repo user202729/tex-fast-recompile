@@ -69,6 +69,14 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("executable", help="The executable to run, such as pdflatex")
 	parser.add_argument("--jobname", help="The jobname")
 	parser.add_argument("--output-directory", type=Path, help="The output directory")
+	parser.add_argument("--temp-output-directory", action="store_true", default=True, help=
+					 "If this flag is set, the output directory as seen by TeX will be different from "
+					 "the specified output directory value; the output PDF, log file and synctex file will be copied back "
+					 "when the compilation finishes. Use this to allow processing begindocument hooks in preamble phase "
+					 "even with hyperref package enabled for an extra speedup, but this will break if "
+					 "some other package depends on the precise output directory."
+					 )
+	parser.add_argument("--no-temp-output-directory", action="store_false", dest="temp-output-directory")
 	parser.add_argument("--shell-escape",action="store_true", help="Enable shell escape")
 	parser.add_argument("--8bit",action="store_true", help="Same as --8bit to engines")
 	parser.add_argument("--recorder", action="store_true", help="Same as --recorder to engines")
@@ -85,6 +93,8 @@ def get_parser()->argparse.ArgumentParser:
 					 "in that case it's preferable to wait a bit before reading the file content.")
 	parser.add_argument("--close-stdin", action="store_true", help="Close stdin of the TeX process so that it exits out on error. This is the default.",
 					 default=True)
+	parser.add_argument("--show-time", action="store_true", help="Show time taken of compilation", default=True)
+	parser.add_argument("--no-show-time", action="store_false", dest="show-time")
 	parser.add_argument("--no-close-stdin", action="store_false", dest="close-stdin", help="Reverse of --close-stdin. Currently not very well-supported.")
 	parser.add_argument("--copy-output", type=Path, help="After compilation finishes, copy the output file to the given path")
 	parser.add_argument("--copy-log", type=Path,
@@ -220,9 +230,9 @@ class CompilationDaemonLowLevel:
 
 				copy_stdout_thread.join()
 
-				sys.stdout.write(f"Time taken: {time.time()-start_time:.3f}s\n")
-
-
+				if args.show_time:
+					sys.stdout.write(f"Time taken: {time.time()-start_time:.3f}s\n")
+					sys.stdout.flush()
 
 				if args.copy_output is not None:
 					try:
