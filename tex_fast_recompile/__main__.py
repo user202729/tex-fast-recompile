@@ -5,13 +5,14 @@ import sys
 from pathlib import Path
 from dataclasses import dataclass
 import types
-from typing import Iterator, Optional, List, Callable
+from typing import Iterator, Optional, List, Callable, Union, Type
 import subprocess
 import threading
 import queue
 import shutil
 import sys
 import time
+import tempfile
 
 @dataclass
 class Preamble:
@@ -124,7 +125,7 @@ class CompilationDaemonLowLevel:
 	filename: str
 	executable: str
 	jobname: str
-	output_directory: Optional[Path]
+	output_directory: Path
 	shell_escape: bool
 	_8bit: bool
 	recorder: bool
@@ -167,8 +168,7 @@ class CompilationDaemonLowLevel:
 		# build the command
 		command=[self.executable]
 		command.append("--jobname="+self.jobname)
-		if self.output_directory is not None:
-			command.append("--output-directory="+str(self.output_directory))
+		command.append("--output-directory="+str(self.output_directory))
 		if self.shell_escape:
 			command.append("--shell-escape")
 		if self._8bit:
@@ -232,6 +232,45 @@ class CompilationDaemonLowLevel:
 		return process.returncode==0
 
 
+@dataclass
+class CompilationDaemonLowLevelTempOutputDir:
+	filename: str
+	executable: str
+	jobname: str
+	output_directory: Path
+	shell_escape: bool
+	_8bit: bool
+	recorder: bool
+	extra_args: List[str]
+	close_stdin: bool
+	compiling_callback: Callable[[], None]
+
+	def __post_init__(self)->None:
+		self._temp_output_dir=tempfile.TemporaryDirectory()
+		self._temp_output_dir_path=Path(self._temp_output_dir.name)
+		self._daemon=CompilationDaemonLowLevel(
+			filename=self.filename,
+			executable=self.executable,
+			jobname=self.jobname,
+			output_directory=self._temp_output_dir_path,
+			shell_escape=self.shell_escape,
+			_8bit=self._8bit,
+			recorder=self.recorder,
+			extra_args=self.extra_args,
+			close_stdin=self.close_stdin,
+			compiling_callback=self.compiling_callback,
+			)
+
+	def finish(self)->bool:
+		try:
+			result=self._daemon.finish()
+			# copy back the generated files to the original output directory
+			for path in self._temp_output_dir_path.iterdir():
+				shutil.copy(path, self.output_directory)
+			return result
+		finally:
+			self._temp_output_dir.cleanup()
+
 
 @dataclass
 class CompilationDaemon:
@@ -282,7 +321,12 @@ class CompilationDaemon:
 		while True:
 			no_preamble_error_instance=None
 			try:
-				daemon=CompilationDaemonLowLevel(
+				cls: Union[Type[CompilationDaemonLowLevel], Type[CompilationDaemonLowLevelTempOutputDir]]
+				if args.temp_output_directory:
+					cls=CompilationDaemonLowLevelTempOutputDir
+				else:
+					cls=CompilationDaemonLowLevel
+				daemon=cls(
 						filename=args.filename,
 						executable=args.executable,
 						jobname=args.jobname,
