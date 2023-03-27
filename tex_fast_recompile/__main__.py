@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from dataclasses import dataclass
 import types
-from typing import Iterator
+from typing import Iterator, Optional, List, Callable
 import subprocess
 import threading
 import queue
@@ -125,7 +125,17 @@ class CompilationDaemonLowLevel:
 	The constructor never raises `NoPreambleError`.
 	"""
 
-	args: types.SimpleNamespace
+	filename: str
+	executable: str
+	jobname: str
+	output_directory: Optional[Path]
+	shell_escape: bool
+	_8bit: bool
+	recorder: bool
+	extra_args: List[str]
+	close_stdin: bool
+	compiling_callback: Callable[[], None]
+	finish_callback: Callable[[bool], None]  # the value passed in is whether the compilation is successful
 
 	def __post_init__(self)->None:
 		self._recompile_iter = self._recompile_iter_func()
@@ -135,17 +145,15 @@ class CompilationDaemonLowLevel:
 		next(self._recompile_iter)
 
 	def _recompile_iter_func(self)->Iterator:
-		args=self.args
-
 		while True:
 			try:
-				preamble=extract_preamble(Path(args.filename).read_text())
+				preamble=extract_preamble(Path(self.filename).read_text())
 			except NoPreambleError:
 				yield
 				raise
 
 			if preamble.implicit:
-				assert '"' not in args.filename
+				assert '"' not in self.filename
 				compiling_filename=(
 					r"\RequirePackage{fastrecompile}"
 					r"\fastrecompilesetimplicitpreamble"
@@ -159,18 +167,18 @@ class CompilationDaemonLowLevel:
 
 
 			# build the command
-			command=[args.executable]
-			command.append("--jobname="+args.jobname)
-			if args.output_directory is not None:
-				command.append("--output-directory="+str(args.output_directory))
-			if args.shell_escape:
+			command=[self.executable]
+			command.append("--jobname="+self.jobname)
+			if self.output_directory is not None:
+				command.append("--output-directory="+str(self.output_directory))
+			if self.shell_escape:
 				command.append("--shell-escape")
-			if getattr(args, "8bit"):
+			if self._8bit:
 				command.append("--8bit")
-			if args.recorder:
+			if self.recorder:
 				command.append("--recorder")
-			if args.extra_args:
-				command+=args.extra_args
+			if self.extra_args:
+				command+=self.extra_args
 			command.append(compiling_filename)
 
 
@@ -182,31 +190,28 @@ class CompilationDaemonLowLevel:
 					assert process.stdout is not None
 
 					# the inserted command \fastrecompileinputreadline need to read the filename from stdin
-					process.stdin.write(args.filename.encode('u8') + b"\n")
+					process.stdin.write(self.filename.encode('u8') + b"\n")
 					process.stdin.flush()
 
 					# wait for recompile() call
 					yield
 
-					start_time=time.time()
-
 					# check if the preamble is still the same
-					if preamble!=extract_preamble(Path(args.filename).read_text()):
+					if preamble!=extract_preamble(Path(self.filename).read_text()):
 						raise PreambleChangedError()
 
 					# send one line to the process to wake it up
 					# (before this step, process stdout must be suppressed)
 					try:
-						process.stdin.write(args.filename.encode('u8') + b"\n")
+						process.stdin.write(self.filename.encode('u8') + b"\n")
 						process.stdin.flush()
-						if args.close_stdin:
+						if self.close_stdin:
 							process.stdin.close()
 					except BrokenPipeError:
 						# might happen if the process exits before reaching the \fastrecompileendpreamble line
 						pass
 
-					if args.compiling_cmd:
-						subprocess.run(args.compiling_cmd, shell=True, check=True)
+					self.compiling_callback()
 
 					# start a new thread to copy process stdout to sys.stdout
 					# the copy should be done such that partially-written lines get copied immediately when they're written
@@ -230,26 +235,8 @@ class CompilationDaemonLowLevel:
 
 				copy_stdout_thread.join()
 
-				if args.show_time:
-					sys.stdout.write(f"Time taken: {time.time()-start_time:.3f}s\n")
-					sys.stdout.flush()
+				self.finish_callback(process.returncode==0)
 
-				if args.copy_output is not None:
-					try:
-						shutil.copyfile(args.generated_pdf_path, args.copy_output)
-					except FileNotFoundError:
-						pass
-
-				if args.copy_log is not None:
-					# this must not error out
-					shutil.copyfile(args.generated_log_path, args.copy_log)
-
-				if process.returncode!=0:
-					if args.failure_cmd:
-						subprocess.run(args.failure_cmd, shell=True, check=True)
-				else:
-					if args.success_cmd:
-						subprocess.run(args.success_cmd, shell=True, check=True)
 
 
 @dataclass
@@ -264,13 +251,54 @@ class CompilationDaemon:
 		self.recompile()  # this makes the function run to the first time it yields
 
 	def recompile(self)->None:
+		self.start_time=time.time()
 		next(self._recompile_iter)
+
+	def compiling_callback(self):
+		args=self.args
+		if args.compiling_cmd:
+			subprocess.run(args.compiling_cmd, shell=True, check=True)
+
+	def finish_callback(self, success: bool):
+		args=self.args
+		if args.show_time:
+			sys.stdout.write(f"Time taken: {time.time()-self.start_time:.3f}s\n")
+			sys.stdout.flush()
+
+		if args.copy_output is not None:
+			try:
+				shutil.copyfile(args.generated_pdf_path, args.copy_output)
+			except FileNotFoundError:
+				pass
+
+		if args.copy_log is not None:
+			# this must not error out
+			shutil.copyfile(args.generated_log_path, args.copy_log)
+
+		if success:
+			if args.success_cmd:
+				subprocess.run(args.success_cmd, shell=True, check=True)
+		else:
+			if args.failure_cmd:
+				subprocess.run(args.failure_cmd, shell=True, check=True)
 
 	def _recompile_iter_func(self)->Iterator:
 		args=self.args
 		immediately_recompile=False
 		while True:
-			daemon=CompilationDaemonLowLevel(args)
+			daemon=CompilationDaemonLowLevel(
+					filename=args.filename,
+					executable=args.executable,
+					jobname=args.jobname,
+					output_directory=args.output_directory,
+					shell_escape=args.shell_escape,
+					_8bit=getattr(args, "8bit"),
+					recorder=args.recorder,
+					extra_args=args.extra_args,
+					close_stdin=args.close_stdin,
+					compiling_callback=self.compiling_callback,
+					finish_callback=self.finish_callback,
+					)
 
 			try:
 				while True:
