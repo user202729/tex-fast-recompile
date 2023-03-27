@@ -65,6 +65,7 @@ such as:
 
 ```latex
 \WarningFilter{latex}{Reference `}
+\WarningFilter{latex}{Citation `}
 \WarningFilter{latex}{There were undefined references}
 \WarningFilter{latex}{Label(s) may have changed}
 \WarningFilter{rerunfilecheck}{}
