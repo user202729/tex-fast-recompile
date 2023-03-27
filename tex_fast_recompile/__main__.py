@@ -116,13 +116,9 @@ class CompilationDaemonLowLevel:
 	Use like this:
 
 	```
-	daemon = CompilationDaemonLowLevel(...)  # may do something but does not compile
-	daemon.recompile()  # recompile
-	...
+	daemon = CompilationDaemonLowLevel(...)  # start the compiler, wait... (may raise NoPreambleError)
+	success = daemon.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
 	```
-
-	May raise `NoPreambleError` or `PreambleChangedError`.
-	The constructor never raises `NoPreambleError`.
 	"""
 
 	filename: str
@@ -135,107 +131,105 @@ class CompilationDaemonLowLevel:
 	extra_args: List[str]
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
-	finish_callback: Callable[[bool], None]  # the value passed in is whether the compilation is successful
 
 	def __post_init__(self)->None:
 		self._recompile_iter = self._recompile_iter_func()
-		self.recompile()  # this makes the function run to the first time it yields
+		next(self._recompile_iter)  # this makes the function run to the first time it yields
 
-	def recompile(self)->None:
-		next(self._recompile_iter)
+	def finish(self)->bool:
+		"""
+		Returns whether the compiler returns 0.
+		Note that it's possible for the compiler to return 0 and yet the compilation failed, if no PDF is generated.
+		"""
+		try:
+			next(self._recompile_iter)
+			assert False, "This cannot happen"
+		except StopIteration as e:
+			return e.value
 
 	def _recompile_iter_func(self)->Iterator:
-		while True:
+		preamble=extract_preamble(Path(self.filename).read_text())
+
+		if preamble.implicit:
+			assert '"' not in self.filename
+			compiling_filename=(
+				r"\RequirePackage{fastrecompile}"
+				r"\fastrecompilesetimplicitpreamble"
+				r"\fastrecompileinputreadline"
+				)
+		else:
+			compiling_filename=(
+				r"\RequirePackage{fastrecompile}"
+				r"\fastrecompileinputreadline"
+				)
+
+
+		# build the command
+		command=[self.executable]
+		command.append("--jobname="+self.jobname)
+		if self.output_directory is not None:
+			command.append("--output-directory="+str(self.output_directory))
+		if self.shell_escape:
+			command.append("--shell-escape")
+		if self._8bit:
+			command.append("--8bit")
+		if self.recorder:
+			command.append("--recorder")
+		if self.extra_args:
+			command+=self.extra_args
+		command.append(compiling_filename)
+
+		try:
+			process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+			assert process.stdin is not None
+			assert process.stdout is not None
+
+			# the inserted command \fastrecompileinputreadline need to read the filename from stdin
+			process.stdin.write(self.filename.encode('u8') + b"\n")
+			process.stdin.flush()
+
+			# wait for recompile() call
+			yield
+
+			# check if the preamble is still the same
+			if preamble!=extract_preamble(Path(self.filename).read_text()):
+				raise PreambleChangedError()
+
+			# send one line to the process to wake it up
+			# (before this step, process stdout must be suppressed)
 			try:
-				preamble=extract_preamble(Path(self.filename).read_text())
-			except NoPreambleError:
-				yield
-				raise
+				process.stdin.write(self.filename.encode('u8') + b"\n")
+				process.stdin.flush()
+				if self.close_stdin:
+					process.stdin.close()
+			except BrokenPipeError:
+				# might happen if the process exits before reaching the \fastrecompileendpreamble line
+				pass
 
-			if preamble.implicit:
-				assert '"' not in self.filename
-				compiling_filename=(
-					r"\RequirePackage{fastrecompile}"
-					r"\fastrecompilesetimplicitpreamble"
-					r"\fastrecompileinputreadline"
-					)
-			else:
-				compiling_filename=(
-					r"\RequirePackage{fastrecompile}"
-					r"\fastrecompileinputreadline"
-					)
+			self.compiling_callback()
 
-
-			# build the command
-			command=[self.executable]
-			command.append("--jobname="+self.jobname)
-			if self.output_directory is not None:
-				command.append("--output-directory="+str(self.output_directory))
-			if self.shell_escape:
-				command.append("--shell-escape")
-			if self._8bit:
-				command.append("--8bit")
-			if self.recorder:
-				command.append("--recorder")
-			if self.extra_args:
-				command+=self.extra_args
-			command.append(compiling_filename)
-
-
-			while True:
-				try:
-
-					process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-					assert process.stdin is not None
+			# start a new thread to copy process stdout to sys.stdout
+			# the copy should be done such that partially-written lines get copied immediately when they're written
+			def copy_stdout_work()->None:
+				while True:
 					assert process.stdout is not None
+					# this is a bit inefficient in that it reads one byte at a time
+					# but I don't know how to do it better
+					content=process.stdout.read(1)
+					if content==b"":
+						break
+					sys.stdout.buffer.write(content)
+					sys.stdout.buffer.flush()
+			copy_stdout_thread=threading.Thread(target=copy_stdout_work)
+			copy_stdout_thread.start()
 
-					# the inserted command \fastrecompileinputreadline need to read the filename from stdin
-					process.stdin.write(self.filename.encode('u8') + b"\n")
-					process.stdin.flush()
+			# wait for the process to finish
+			process.wait()
+		finally:
+			process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
 
-					# wait for recompile() call
-					yield
-
-					# check if the preamble is still the same
-					if preamble!=extract_preamble(Path(self.filename).read_text()):
-						raise PreambleChangedError()
-
-					# send one line to the process to wake it up
-					# (before this step, process stdout must be suppressed)
-					try:
-						process.stdin.write(self.filename.encode('u8') + b"\n")
-						process.stdin.flush()
-						if self.close_stdin:
-							process.stdin.close()
-					except BrokenPipeError:
-						# might happen if the process exits before reaching the \fastrecompileendpreamble line
-						pass
-
-					self.compiling_callback()
-
-					# start a new thread to copy process stdout to sys.stdout
-					# the copy should be done such that partially-written lines get copied immediately when they're written
-					def copy_stdout_work()->None:
-						while True:
-							assert process.stdout is not None
-							# this is a bit inefficient in that it reads one byte at a time
-							# but I don't know how to do it better
-							content=process.stdout.read(1)
-							if content==b"":
-								break
-							sys.stdout.buffer.write(content)
-							sys.stdout.buffer.flush()
-					copy_stdout_thread=threading.Thread(target=copy_stdout_work)
-					copy_stdout_thread.start()
-
-					# wait for the process to finish
-					process.wait()
-				finally:
-					process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
-
-				copy_stdout_thread.join()
-
-				self.finish_callback(process.returncode==0)
+		copy_stdout_thread.join()
+		return process.returncode==0
 
 
 
@@ -286,25 +280,39 @@ class CompilationDaemon:
 		args=self.args
 		immediately_recompile=False
 		while True:
-			daemon=CompilationDaemonLowLevel(
-					filename=args.filename,
-					executable=args.executable,
-					jobname=args.jobname,
-					output_directory=args.output_directory,
-					shell_escape=args.shell_escape,
-					_8bit=getattr(args, "8bit"),
-					recorder=args.recorder,
-					extra_args=args.extra_args,
-					close_stdin=args.close_stdin,
-					compiling_callback=self.compiling_callback,
-					finish_callback=self.finish_callback,
-					)
+			no_preamble_error_instance=None
+			try:
+				daemon=CompilationDaemonLowLevel(
+						filename=args.filename,
+						executable=args.executable,
+						jobname=args.jobname,
+						output_directory=args.output_directory,
+						shell_escape=args.shell_escape,
+						_8bit=getattr(args, "8bit"),
+						recorder=args.recorder,
+						extra_args=args.extra_args,
+						close_stdin=args.close_stdin,
+						compiling_callback=self.compiling_callback,
+						)
+			except NoPreambleError as e:
+				# we swallow the error here and raise it later after the first recompile() call
+				no_preamble_error_instance=e
+
 
 			try:
-				while True:
-					if immediately_recompile: immediately_recompile=False
-					else: yield
-					daemon.recompile()
+				if immediately_recompile: immediately_recompile=False
+				else: yield
+
+				if no_preamble_error_instance is not None:
+					raise no_preamble_error_instance
+				self.finish_callback(daemon.finish())
+
+			except NoPreambleError as e:
+				sys.stdout.write(f"! {e.args[0]}.\n")
+				sys.stdout.flush()
+				yield
+				immediately_recompile=True
+				continue
 
 			except PreambleChangedError:
 				if args.abort_on_preamble_change:
@@ -312,12 +320,6 @@ class CompilationDaemon:
 				else:
 					sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
 					immediately_recompile=True
-
-			except NoPreambleError as e:
-				sys.stdout.write(f"! {e.args[0]}.\n")
-				sys.stdout.flush()
-				yield
-				immediately_recompile=True
 
 
 def main(args=None)->None:
