@@ -248,6 +248,18 @@ class CompilationDaemonLowLevelTempOutputDir:
 	def __post_init__(self)->None:
 		self._temp_output_dir=tempfile.TemporaryDirectory()
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
+
+		# copy files from real output_directory to temp_output_directory
+		# currently sub-aux files are not copied, see https://github.com/user202729/tex-fast-recompile/issues/7
+		for extension in ['aux', 'bcf', 'fls', 'idx', 'ind', 'lof', 'lot', 'out', 'toc', 'blg', 'ilg', 'xdv']:
+			try:
+				shutil.copyfile(
+					self.output_directory / (self.jobname + '.' + extension),
+					self._temp_output_dir_path / (self.jobname + '.' + extension),
+					)
+			except FileNotFoundError:
+				pass
+
 		self._daemon=CompilationDaemonLowLevel(
 			filename=self.filename,
 			executable=self.executable,
@@ -265,8 +277,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 		try:
 			result=self._daemon.finish()
 			# copy back the generated files to the original output directory
-			for path in self._temp_output_dir_path.iterdir():
-				shutil.copy(path, self.output_directory)
+			shutil.copytree(self._temp_output_dir_path, self.output_directory, dirs_exist_ok=True)
 			return result
 		finally:
 			self._temp_output_dir.cleanup()
