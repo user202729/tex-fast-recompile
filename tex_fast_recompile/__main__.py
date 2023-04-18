@@ -39,20 +39,21 @@ def extract_preamble(text: str)->Preamble:
 	try:
 		index=lines.index(search_str)
 		implicit=False
+
+		# ensure there's only one occurrence of the search string
+		try:
+			lines.index(search_str,index+1)
+			raise NoPreambleError(f"File contains multiple {search_str} lines")
+		except ValueError:
+			pass
+
 	except ValueError:
 		try:
-			search_str=r"\begin{document}"
-			index=lines.index(search_str)
+			index=lines.index(r"\begin{document}")   # we allow multiple \begin{document} line as the latter ones may appear in e.g. verbatim environment
 			implicit=True
 		except ValueError:
 			raise NoPreambleError(r"File contains neither \fastrecompileendpreamble nor \begin{document} line") from None
 
-	# ensure there's only one occurrence of the search string
-	try:
-		lines.index(search_str,index+1)
-		raise NoPreambleError(f"File contains multiple {search_str} lines")
-	except ValueError:
-		pass
 
 	# return the preamble
 	return Preamble(lines[:index], implicit)
