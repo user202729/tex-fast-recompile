@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from dataclasses import dataclass
 import types
-from typing import Iterator, Optional, List, Callable, Union, Type
+from typing import Iterator, Optional, List, Callable, Union, Type, Generator
 import subprocess
 import threading
 import queue
@@ -88,6 +88,7 @@ def get_parser()->argparse.ArgumentParser:
 					 "must not be passed here. "
 					 "Pass the argument multiple times to add multiple arguments.")
 	parser.add_argument("--extra-watch", type=Path, default=[], action="append", help="Extra files to watch")
+	parser.add_argument("--extra-watch-preamble", type=Path, default=[], action="append", help="Extra files to watch -- when these files change then recompile from the preamble")
 	parser.add_argument("--extra-delay", type=float, default=0.05, help=
 					 "Time to wait after some file change before recompile in seconds. "
 					 "This is needed because some editor such as vim deletes the file first then write the new content, "
@@ -276,10 +277,15 @@ class CompilationDaemonLowLevelTempOutputDir:
 	def finish(self)->bool:
 		try:
 			result=self._daemon.finish()
-			# copy back the generated files to the original output directory
-			shutil.copytree(self._temp_output_dir_path, self.output_directory, dirs_exist_ok=True)
+			# copy back all the generated files in the target folder to the original output directory
+			for file in self._temp_output_dir_path.iterdir():
+				if file.is_file():
+					shutil.copy2(file, self.output_directory)
+			# note: this is inefficient because it copies instead of moves
+			# note: currently files generated in subdirectories not supported
 			return result
 		finally:
+			shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
 			self._temp_output_dir.cleanup()
 
 
@@ -292,11 +298,11 @@ class CompilationDaemon:
 
 	def __post_init__(self)->None:
 		self._recompile_iter = self._recompile_iter_func()
-		self.recompile()  # this makes the function run to the first time it yields
+		next(self._recompile_iter)  # this makes the function run to the first time it yields
 
-	def recompile(self)->None:
+	def recompile(self, recompile_preamble: bool)->None:
 		self.start_time=time.time()
-		next(self._recompile_iter)
+		self._recompile_iter.send(recompile_preamble)
 
 	def compiling_callback(self):
 		args=self.args
@@ -326,7 +332,7 @@ class CompilationDaemon:
 			if args.failure_cmd:
 				subprocess.run(args.failure_cmd, shell=True, check=True)
 
-	def _recompile_iter_func(self)->Iterator:
+	def _recompile_iter_func(self)->Generator[None, bool, None]:
 		args=self.args
 		immediately_recompile=False
 		while True:
@@ -356,7 +362,13 @@ class CompilationDaemon:
 
 			try:
 				if immediately_recompile: immediately_recompile=False
-				else: yield
+				else:
+					recompile_preamble=yield
+					print("========", recompile_preamble)
+					if recompile_preamble:
+						sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
+						immediately_recompile=True
+						continue
 
 				if no_preamble_error_instance is not None:
 					raise no_preamble_error_instance
@@ -401,17 +413,20 @@ def main(args=None)->None:
 	import watchdog.observers  # type: ignore
 
 	# create a queue to wake up the main thread whenever something changed
-	q: queue.Queue[None]=queue.Queue()
+	q: queue.Queue[bool]=queue.Queue()
 
 	watching_paths: set[Path]=set()
 
+	@dataclass(frozen=True)
 	class Handler(watchdog.events.FileSystemEventHandler):
+		preamble: bool
+		
 		def check_watching_path(self, path: str)->None:
 			# this function is called whenever something in path is changed.
 			# because we may watch the whole directory (see below) we need to check
 			# if the path is actually the file we want to watch
 			if Path(path) in watching_paths:
-				q.put(None)
+				q.put(self.preamble)
 
 		def on_created(self, event)->None:
 			self.check_watching_path(event.src_path)
@@ -424,23 +439,26 @@ def main(args=None)->None:
 
 
 	observer = watchdog.observers.Observer()
-	for path in args.extra_watch+[Path(args.filename)]:
+	for path, preamble in [
+			*[(x, False) for x in args.extra_watch+[Path(args.filename)]],
+			*[(x, True) for x in args.extra_watch_preamble],
+			]:
 		# we use the same trick as in when-changed package,
 		# instead of watching the file we watch its parent,
 		# because editor may delete and recreate the file
 		# also need to watch the realpath instead of possibly a symlink
 		realpath=path.resolve()
 		watching_paths.add(realpath)
-		observer.schedule(Handler(),
+		observer.schedule(Handler(preamble=preamble),
 					realpath if realpath.is_dir() else realpath.parent,
 					recursive=False)  # must disable recursive otherwise it may take a very long time
 	observer.start()
 
 	daemon=CompilationDaemon(args)
-	daemon.recompile()
+	daemon.recompile(False)
 
 	while True:
-		q.get()
+		recompile_preamble=q.get()
 		sys.stdout.write("\n"*args.num_separation_lines)
 
 		# wait for the specified delay
@@ -448,9 +466,10 @@ def main(args=None)->None:
 
 		# empty out the queue
 		while not q.empty():
-			q.get()
+			tmp=q.get()
+			recompile_preamble=recompile_preamble or tmp
 
-		daemon.recompile()
+		daemon.recompile(recompile_preamble)
 
 
 if __name__ == "__main__":
