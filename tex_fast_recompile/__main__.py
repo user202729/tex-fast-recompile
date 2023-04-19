@@ -13,6 +13,7 @@ import shutil
 import sys
 import time
 import tempfile
+import os
 
 @dataclass
 class Preamble:
@@ -233,6 +234,8 @@ class CompilationDaemonLowLevel:
 		copy_stdout_thread.join()
 		return process.returncode==0
 
+tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
+tmpdir.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class CompilationDaemonLowLevelTempOutputDir:
@@ -248,7 +251,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 	compiling_callback: Callable[[], None]
 
 	def __post_init__(self)->None:
-		self._temp_output_dir=tempfile.TemporaryDirectory()
+		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
 
 		# copy files from real output_directory to temp_output_directory
@@ -365,7 +368,6 @@ class CompilationDaemon:
 				if immediately_recompile: immediately_recompile=False
 				else:
 					recompile_preamble=yield
-					print("========", recompile_preamble)
 					if recompile_preamble:
 						sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
 						immediately_recompile=True
