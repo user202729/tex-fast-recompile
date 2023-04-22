@@ -82,6 +82,10 @@ While the first filter may be overly broad, for the purpose of fast preview it i
 
 You can put `\fastrecompileendpreamble` on a single line to mark the end of the "fixed preamble" part.
 
+Or equivalently, `\csname fastrecompileendpreamble\endcsname` (note that there must be no space before the `\endcsname`) --
+this is the same as above, but will just silently do nothing instead of complaining about `\fastrecompileendpreamble` being not defined
+if this program is not used.
+
 Note that:
 
 * `\fastrecompileendpreamble` must appear at most once in the *main* file.

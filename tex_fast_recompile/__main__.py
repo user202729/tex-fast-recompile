@@ -33,31 +33,26 @@ def extract_preamble(text: str)->Preamble:
 	# split into lines
 	lines=text.splitlines()
 
-	search_str=r"\fastrecompileendpreamble"
+	search_str1=r"\fastrecompileendpreamble"
+	search_str2=r"\csname fastrecompileendpreamble\endcsname"
+	search_str3=r"\begin{document}"
 
-	# find the line with content identical to the search string
-	implicit: bool
-	try:
-		index=lines.index(search_str)
-		implicit=False
+	count1=lines.count(search_str1)
+	count2=lines.count(search_str2)
+	count3=lines.count(search_str3)
 
-		# ensure there's only one occurrence of the search string
-		try:
-			lines.index(search_str,index+1)
-			raise NoPreambleError(f"File contains multiple {search_str} lines")
-		except ValueError:
-			pass
-
-	except ValueError:
-		try:
-			index=lines.index(r"\begin{document}")   # we allow multiple \begin{document} line as the latter ones may appear in e.g. verbatim environment
-			implicit=True
-		except ValueError:
-			raise NoPreambleError(r"File contains neither \fastrecompileendpreamble nor \begin{document} line") from None
-
-
-	# return the preamble
-	return Preamble(lines[:index], implicit)
+	if count1+count2>1:
+		raise NoPreambleError(r"File contains multiple \fastrecompileendpreamble lines")
+	elif count1+count2==1:
+		# find the index of the first occurrence of search_str1 or search_str2
+		index=lines.index(search_str1) if count1==1 else lines.index(search_str2)
+		return Preamble(lines[:index], implicit=False)
+	elif count3>0:
+		# find the index of the first occurrence of search_str3
+		index=lines.index(search_str3)
+		return Preamble(lines[:index], implicit=True)
+	else:
+		raise NoPreambleError(r"File contains neither \fastrecompileendpreamble nor \begin{document} line")
 
 
 class PreambleChangedError(Exception):
