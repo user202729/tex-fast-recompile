@@ -116,7 +116,7 @@ class CompilationDaemonLowLevel:
 
 	```
 	daemon = CompilationDaemonLowLevel(...)  # start the compiler, wait... (may raise NoPreambleError)
-	success = daemon.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
+	return_0 = daemon.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
 	```
 	"""
 
@@ -303,12 +303,15 @@ class CompilationDaemon:
 		self.start_time=time.time()
 		self._recompile_iter.send(recompile_preamble)
 
-	def compiling_callback(self):
+	def compiling_callback(self)->None:
 		args=self.args
 		if args.compiling_cmd:
 			subprocess.run(args.compiling_cmd, shell=True, check=True)
 
-	def finish_callback(self, success: bool):
+	def finish_callback(self, return_0: bool)->None:
+		"""
+		This function is called when the compilation finished.
+		"""
 		args=self.args
 		if args.show_time:
 			sys.stdout.write(f"Time taken: {time.time()-self.start_time:.3f}s\n")
@@ -324,7 +327,7 @@ class CompilationDaemon:
 			# this must not error out
 			shutil.copyfile(args.generated_log_path, args.copy_log)
 
-		if success:
+		if return_0 and (Path(args.output_directory)/args.jobname).with_suffix(".pdf").is_file():
 			if args.success_cmd:
 				subprocess.run(args.success_cmd, shell=True, check=True)
 		else:
