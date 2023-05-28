@@ -135,6 +135,12 @@ class CompilationDaemonLowLevel:
 	extra_args: List[str]
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
+	env: Optional[dict[str, str]]=None
+	"""
+	Environment variables to be passed to subprocess.Popen.
+	Note that this should either be None (inherit parent's environment variables) or
+	values in os.environ should be copied in.
+	"""
 
 	def __post_init__(self)->None:
 		self._recompile_iter = self._recompile_iter_func()
@@ -183,7 +189,7 @@ class CompilationDaemonLowLevel:
 		command.append(compiling_filename)
 
 		try:
-			process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+			process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
 			assert process.stdin is not None
 			assert process.stdout is not None
 
@@ -253,18 +259,6 @@ class CompilationDaemonLowLevelTempOutputDir:
 	def __post_init__(self)->None:
 		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
-
-		# copy files from real output_directory to temp_output_directory
-		# currently sub-aux files are not copied, see https://github.com/user202729/tex-fast-recompile/issues/7
-		for extension in ['aux', 'bcf', 'fls', 'idx', 'ind', 'lof', 'lot', 'out', 'toc', 'blg', 'ilg', 'xdv']:
-			try:
-				shutil.copyfile(
-					self.output_directory / (self.jobname + '.' + extension),
-					self._temp_output_dir_path / (self.jobname + '.' + extension),
-					)
-			except FileNotFoundError:
-				pass
-
 		self._daemon=CompilationDaemonLowLevel(
 			filename=self.filename,
 			executable=self.executable,
