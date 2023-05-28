@@ -243,6 +243,13 @@ class CompilationDaemonLowLevel:
 tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
 tmpdir.mkdir(parents=True, exist_ok=True)
 
+default_texinputs: list[str]
+if os.environ.get("TEXINPUTS"):  # exist and nonempty
+	default_texinputs=os.environ["TEXINPUTS"].split(os.pathsep)
+else:
+	default_texinputs=subprocess.run(["kpsewhich", "-var-value=TEXINPUTS"], text=True, stdout=subprocess.PIPE
+								  ).stdout.removesuffix("\n").split(os.pathsep)
+
 @dataclass
 class CompilationDaemonLowLevelTempOutputDir:
 	filename: str
@@ -259,6 +266,33 @@ class CompilationDaemonLowLevelTempOutputDir:
 	def __post_init__(self)->None:
 		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
+
+
+		env=None
+
+		# https://stackoverflow.com/questions/19023238/why-python-uppercases-all-environment-variables-in-windows
+		texinputs: list[str]=list(default_texinputs)
+
+		if os.pathsep in str(self.output_directory):
+			print(f"Warning: Output directory {self.output_directory} contains invalid character {os.pathsep}")
+
+			# fallback: copy files from real output_directory to temp_output_directory
+			# currently sub-aux files are not copied, see https://github.com/user202729/tex-fast-recompile/issues/7
+			for extension in ['aux', 'bcf', 'fls', 'idx', 'ind', 'lof', 'lot', 'out', 'toc', 'blg', 'ilg', 'xdv']:
+				try:
+					shutil.copyfile(
+						self.output_directory / (self.jobname + '.' + extension),
+						self._temp_output_dir_path / (self.jobname + '.' + extension),
+						)
+				except FileNotFoundError:
+					pass
+
+		else:
+			texinputs.insert(0, str(self.output_directory))
+			env=dict(os.environ)
+			env["TEXINPUTS"]=os.pathsep.join(texinputs)
+
+
 		self._daemon=CompilationDaemonLowLevel(
 			filename=self.filename,
 			executable=self.executable,
@@ -270,6 +304,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 			extra_args=self.extra_args,
 			close_stdin=self.close_stdin,
 			compiling_callback=self.compiling_callback,
+			env=env,
 			)
 
 	def finish(self)->bool:

@@ -8,7 +8,7 @@ from typing import Callable
 
 LinePredicate=Callable[[str], bool]
 
-def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate])->None:
+def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], kill: bool=True)->None:
 	timer=Timer(1, process.kill)
 	timer.start()
 	expects=expects[::-1]
@@ -18,9 +18,12 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate])-
 			expects.pop()
 			if not expects: break
 	else:
-		assert False, "Some expected lines are never seen"
+		if not timer.is_alive():
+			assert False, "Timeout without seeing some lines"
+		assert False, "Process exit voluntarily but some expected lines are never seen??"
 	timer.cancel()
-	process.kill()
+	if kill:
+		process.kill()
 
 def expect_failure(line: str)->bool:
 	return "========failure" in line
@@ -41,19 +44,28 @@ def but_not(f: LinePredicate, *args: LinePredicate)->LinePredicate:
 		return f(line)
 	return result
 
+def ensure_pdf_content(folder: Path, content: str)->None:
+	(folder/"output"/"a.txt").unlink(missing_ok=True)
+	subprocess.run(["pdftotext", folder/"output"/"a.pdf"])
+	assert content in (folder/"output"/"a.txt").read_text()
 
-def prepare_process(tmp_path: Path, content: str)->subprocess.Popen:
+
+def prepare_process(tmp_path: Path, content: str)->tuple[Path, subprocess.Popen]:
 	tmp_file=tmp_path/"a.tex"
 	tmp_file.write_text(textwrap.dedent(content))
-	process=subprocess.Popen(["tex_fast_recompile",
+	output_dir=tmp_path/"output"
+	output_dir.mkdir()
+	process=subprocess.Popen([
+		"tex_fast_recompile",
 		"--success-cmd=echo ========success",
 		"--failure-cmd=echo ========failure",
+		"--output-directory="+str(output_dir),
 		"pdflatex", tmp_file], stdout=subprocess.PIPE, text=True, cwd=tmp_path)
-	return process
+	return tmp_file, process
 
 
 def test_empty_output_pdf(tmp_path: Path)->None:
-	process=prepare_process(tmp_path, r"""
+	_, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
 	\begin{document}
 	\end{document}
@@ -61,7 +73,7 @@ def test_empty_output_pdf(tmp_path: Path)->None:
 	ensure_print_lines(process, [expect_failure])
 
 def test_tex_error(tmp_path: Path)->None:
-	process=prepare_process(tmp_path, r"""
+	_, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
 	\begin{document}
 	123
@@ -71,14 +83,31 @@ def test_tex_error(tmp_path: Path)->None:
 	ensure_print_lines(process, [expect_failure])
 
 def test_recompile(tmp_path: Path)->None:
-	process=prepare_process(tmp_path, r"""
+	_, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
 	\begin{document}
 	\label{abc}page[\pageref{abc}]
 	\end{document}
 	""")
 	ensure_print_lines(process, [but_not(expect_rerunning, expect_success), but_not(expect_success, expect_rerunning)])
-	subprocess.run(["pdftotext", tmp_path/"a.pdf"])
-	assert "page[1]" in (tmp_path/"a.txt").read_text()
 
-
+def test_recompile(tmp_path: Path)->None:
+	tmp_file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\begin{document}
+	\label{abc}page[\pageref{abc}]
+	\end{document}
+	""")
+	ensure_print_lines(process, [but_not(expect_rerunning, expect_success), but_not(expect_success, expect_rerunning)], kill=False)
+	ensure_pdf_content(tmp_path, "page[1]")
+	tmp_file.write_text(textwrap.dedent(r"""
+	\documentclass{article}
+	\begin{document}
+	123\clearpage
+	\label{abc}page[\pageref{abc}]
+	\end{document}
+	"""))
+	ensure_print_lines(process, [
+		but_not(expect_rerunning, expect_success),
+		but_not(expect_success, expect_rerunning)])
+	ensure_pdf_content(tmp_path, "page[2]")
