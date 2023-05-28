@@ -77,7 +77,8 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--no-temp-output-directory", action="store_false", dest="temp-output-directory")
 	parser.add_argument("--auto-rerun", type=int, default=5, help=
 					 "Run another LaTeX pass automatically (up to specified number of runs) "
-					 "if some string such as 'Rerun to get' is detected in the log file."
+					 "if some string such as 'Rerun to get' is detected in the log file. "
+					 "(actually this command-line flag is not yet implemented and the feature is permanently enabled)"
 					 )
 	parser.add_argument("--shell-escape",action="store_true", help="Enable shell escape")
 	parser.add_argument("--8bit",action="store_true", help="Same as --8bit to engines")
