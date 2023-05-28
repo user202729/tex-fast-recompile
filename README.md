@@ -45,7 +45,7 @@ Usually prepending it to your LaTeX compilation command suffices.
 ### LaTeXmk emulation mode
 
 For compatibility with e.g. `vimtex` plugin, an executable `tex_fast_recompile_latexmk` is provided, which takes arguments similar to that of `latexmk`.
-(but it does not do multiple compilation passes or invoke bibliography/indexing commands etc., and the simulation might not be complete)
+(but it does not invoke bibliography/indexing commands/automatically detect changes to dependent files etc., and the simulation might not be complete)
 
 Run `tex_fast_recompile_latexmk --help` to view the available options. (should be similar to `latexmk`'s accepted options)
 

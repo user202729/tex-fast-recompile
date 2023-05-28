@@ -75,6 +75,10 @@ def get_parser()->argparse.ArgumentParser:
 					 "some other package depends on the precise output directory."
 					 )
 	parser.add_argument("--no-temp-output-directory", action="store_false", dest="temp-output-directory")
+	parser.add_argument("--auto-rerun", type=int, default=5, help=
+					 "Run another LaTeX pass automatically (up to specified number of runs) "
+					 "if some string such as 'Rerun to get' is detected in the log file."
+					 )
 	parser.add_argument("--shell-escape",action="store_true", help="Enable shell escape")
 	parser.add_argument("--8bit",action="store_true", help="Same as --8bit to engines")
 	parser.add_argument("--recorder", action="store_true", help="Same as --recorder to engines")
@@ -291,7 +295,13 @@ class CompilationDaemonLowLevelTempOutputDir:
 @dataclass
 class CompilationDaemon:
 	"""
-	Use similar to CompilationDaemonLowLevel but never raises error.
+	Usage::
+
+		daemon = CompilationDaemon(...)  # start the compiler, wait...
+		daemon.recompile()  # finish the compilation
+		daemon.recompile()  # finish another compilation
+
+	Never raises error. Status are reported (printed) to terminal.
 	"""
 	args: types.SimpleNamespace
 
@@ -326,13 +336,6 @@ class CompilationDaemon:
 		if args.copy_log is not None:
 			# this must not error out
 			shutil.copyfile(args.generated_log_path, args.copy_log)
-
-		if return_0 and (Path(args.output_directory)/args.jobname).with_suffix(".pdf").is_file():
-			if args.success_cmd:
-				subprocess.run(args.success_cmd, shell=True, check=True)
-		else:
-			if args.failure_cmd:
-				subprocess.run(args.failure_cmd, shell=True, check=True)
 
 	def _recompile_iter_func(self)->Generator[None, bool, None]:
 		args=self.args
@@ -373,7 +376,25 @@ class CompilationDaemon:
 
 				if no_preamble_error_instance is not None:
 					raise no_preamble_error_instance
-				self.finish_callback(daemon.finish())
+				return_0=daemon.finish()
+				self.finish_callback(return_0=return_0)
+
+				try:
+					log_text: bytes=(daemon.output_directory/args.jobname).with_suffix(".log").read_bytes()
+				except FileNotFoundError:
+					log_text=b""
+
+				if b"Rerun to get" in log_text:
+					print("Rerunning.")
+					immediately_recompile=True
+					continue
+
+				if return_0 and (daemon.output_directory/args.jobname).with_suffix(".pdf").is_file():
+					if args.success_cmd:
+						subprocess.run(args.success_cmd, shell=True, check=True)
+				else:
+					if args.failure_cmd:
+						subprocess.run(args.failure_cmd, shell=True, check=True)
 
 			except NoPreambleError as e:
 				sys.stdout.write(f"! {e.args[0]}.\n")
