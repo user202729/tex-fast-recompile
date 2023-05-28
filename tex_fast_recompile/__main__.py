@@ -243,12 +243,6 @@ class CompilationDaemonLowLevel:
 tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
 tmpdir.mkdir(parents=True, exist_ok=True)
 
-default_texinputs: list[str]
-if os.environ.get("TEXINPUTS"):  # exist and nonempty
-	default_texinputs=os.environ["TEXINPUTS"].split(os.pathsep)
-else:
-	default_texinputs=subprocess.run(["kpsewhich", "-var-value=TEXINPUTS"], text=True, stdout=subprocess.PIPE
-								  ).stdout.removesuffix("\n").split(os.pathsep)
 
 @dataclass
 class CompilationDaemonLowLevelTempOutputDir:
@@ -271,7 +265,8 @@ class CompilationDaemonLowLevelTempOutputDir:
 		env=None
 
 		# https://stackoverflow.com/questions/19023238/why-python-uppercases-all-environment-variables-in-windows
-		texinputs: list[str]=list(default_texinputs)
+
+
 
 		if os.pathsep in str(self.output_directory):
 			print(f"Warning: Output directory {self.output_directory} contains invalid character {os.pathsep}")
@@ -288,9 +283,9 @@ class CompilationDaemonLowLevelTempOutputDir:
 					pass
 
 		else:
-			texinputs.insert(0, str(self.output_directory))
 			env=dict(os.environ)
-			env["TEXINPUTS"]=os.pathsep.join(texinputs)
+			env["TEXINPUTS"]=str(self.output_directory) + os.pathsep + env.get("TEXINPUTS", "")
+			# https://tex.stackexchange.com/a/93733/250119 -- if it's originally empty append a trailing : or ;
 
 
 		self._daemon=CompilationDaemonLowLevel(
