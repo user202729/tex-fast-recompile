@@ -145,6 +145,7 @@ class CompilationDaemonLowLevel:
 	_8bit: bool
 	recorder: bool
 	extra_args: List[str]
+	extra_commands: List[str]  # TeX commands, appended after the command-line arguments
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
 	env: Optional[dict[str, str]]=None
@@ -182,9 +183,9 @@ class CompilationDaemonLowLevel:
 			command.append("--8bit")
 		if self.recorder:
 			command.append("--recorder")
-		if self.extra_args:
-			command+=self.extra_args
+		command+=self.extra_args
 		command.append(compiling_filename)
+		command+=self.extra_commands
 
 		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
 		self._process: Optional[subprocess.Popen[bytes]]=process
@@ -274,6 +275,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 	_8bit: bool
 	recorder: bool
 	extra_args: List[str]
+	extra_commands: List[str]
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
 
@@ -315,6 +317,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 			_8bit=self._8bit,
 			recorder=self.recorder,
 			extra_args=self.extra_args,
+			extra_commands=self.extra_commands,
 			close_stdin=self.close_stdin,
 			compiling_callback=self.compiling_callback,
 			env=env,
@@ -404,6 +407,7 @@ class CompilationDaemon:
 						_8bit=getattr(args, "8bit"),
 						recorder=args.recorder,
 						extra_args=args.extra_args,
+						extra_commands=[],
 						close_stdin=args.close_stdin,
 						compiling_callback=self.compiling_callback,
 						)
