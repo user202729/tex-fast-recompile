@@ -161,17 +161,10 @@ class CompilationDaemonLowLevel:
 		preamble=extract_preamble(Path(self.filename).read_text())
 		self._preamble_at_start=preamble
 
+		compiling_filename=r"\RequirePackage{fastrecompile}"
 		if preamble.implicit:
-			compiling_filename=(
-				r"\RequirePackage{fastrecompile}"
-				r"\fastrecompilesetimplicitpreamble"
-				r"\input{" + filename_escaped + "}"
-				)
-		else:
-			compiling_filename=(
-				r"\RequirePackage{fastrecompile}"
-				r"\input{" + filename_escaped + "}"
-				)
+			compiling_filename+=r"\fastrecompilesetimplicitpreamble"
+		compiling_filename+=r"\input{" + filename_escaped + "}"
 		# we use \input{...} instead of primitive \@@input so the file name change is visible to LaTeX
 
 
