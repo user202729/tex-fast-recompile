@@ -326,7 +326,9 @@ class CompilationDaemon:
 		daemon.recompile()  # finish the compilation
 		daemon.recompile()  # finish another compilation
 
-	Never raises error. Status are reported (printed) to terminal.
+	May raise ``FileNotFoundError`` if the file does not exist. 
+
+	Otherwise never raises error. Status are reported (printed) to terminal.
 	"""
 	args: types.SimpleNamespace
 
@@ -500,6 +502,9 @@ def main(args=None)->None:
 					realpath if realpath.is_dir() else realpath.parent,
 					recursive=False)  # must disable recursive otherwise it may take a very long time
 	observer.start()
+
+	if not Path(args.filename).is_file():
+		raise FileNotFoundError(f"File {args.filename} not found (in directory {os.getcwd()}).")
 
 	daemon=CompilationDaemon(args)
 	daemon.recompile(False)
