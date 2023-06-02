@@ -59,6 +59,8 @@ let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 
 * If VimTeX is used, the latexmk (emulation) is forcefully killed when compilation stops.
 In that case, the temporary directory is not cleaned, and over time it may clutter the temporary directory.
+
+  (this has a partial workaround, that is new process spawned will clean up previous process' temporary directories)
 * Any file `\input` in the preamble must not be changed. (when the preamble changes, the program will automatically detect that)
 * You must not read from the terminal anywhere in the preamble, such as with functions `\read -1 to ...` or `\ior_get_term:nN ...`.
 (if you're not sure what this mean, you should be safe)

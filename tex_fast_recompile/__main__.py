@@ -14,6 +14,8 @@ import sys
 import time
 import tempfile
 import os
+#import atexit
+import psutil  # type: ignore
 
 @dataclass
 class Preamble:
@@ -244,6 +246,15 @@ tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
 tmpdir.mkdir(parents=True, exist_ok=True)
 
 
+#@atexit.register
+def cleanup_atexit()->None:
+	# fallback but probably useless. If process is forcefully killed this is useless anyway, if it's not then finally block will be run
+	prefix=str(os.getpid())+"-"
+	for path in tmpdir.iterdir():
+		if path.name.startswith(prefix):
+			shutil.rmtree(path)  # oddly cleanup() alone does not always remove the directory?
+
+
 @dataclass
 class CompilationDaemonLowLevelTempOutputDir:
 	filename: str
@@ -438,7 +449,20 @@ class CompilationDaemon:
 					immediately_recompile=True
 
 
+def cleanup_previous_processes()->None:
+	for path in [*tmpdir.iterdir()]:
+		try: pid=int(path.name.split("-", maxsplit=1)[0])
+		except ValueError: pass
+		if not psutil.pid_exists(pid):
+			# possible race condition: the path existed before but does not exist when this line is run
+			# e.g. when two processes run this function at the same time
+			# so just ignore if the folder is already deleted
+			shutil.rmtree(path, ignore_errors=True)
+
+
 def main(args=None)->None:
+	cleanup_previous_processes()
+
 	if args is None:
 		args=get_parser().parse_args()
 
