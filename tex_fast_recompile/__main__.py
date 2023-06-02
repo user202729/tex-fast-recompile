@@ -122,9 +122,19 @@ class CompilationDaemonLowLevel:
 	Use like this:
 
 	```
-	daemon = CompilationDaemonLowLevel(...)  # start the compiler, wait... (may raise NoPreambleError)
-	return_0 = daemon.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
+	daemon = CompilationDaemonLowLevel(...)  # create the object (did not start the compiler)
+	try:
+		with daemon: # start the compiler (may raise NoPreambleError)
+			...
+			return_0 = daemon.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
+
+	except NoPreambleError:
+		...
 	```
+
+	The ``with`` block is needed to clean-up properly.
+
+	:meth:`finish` can only be called after ``with daemon:``, and can only be called once.
 	"""
 
 	filename: str
@@ -144,23 +154,9 @@ class CompilationDaemonLowLevel:
 	values in os.environ should be copied in.
 	"""
 
-	def __post_init__(self)->None:
-		self._recompile_iter = self._recompile_iter_func()
-		next(self._recompile_iter)  # this makes the function run to the first time it yields
-
-	def finish(self)->bool:
-		"""
-		Returns whether the compiler returns 0.
-		Note that it's possible for the compiler to return 0 and yet the compilation failed, if no PDF is generated.
-		"""
-		try:
-			next(self._recompile_iter)
-			assert False, "This cannot happen"
-		except StopIteration as e:
-			return e.value
-
-	def _recompile_iter_func(self)->Iterator:
+	def __enter__(self)->None:
 		preamble=extract_preamble(Path(self.filename).read_text())
+		self._preamble_at_start=preamble
 
 		if preamble.implicit:
 			assert '"' not in self.filename
@@ -190,57 +186,70 @@ class CompilationDaemonLowLevel:
 			command+=self.extra_args
 		command.append(compiling_filename)
 
-		try:
-			process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
-			assert process.stdin is not None
-			assert process.stdout is not None
+		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
+		self._process: Optional[subprocess.Popen[bytes]]=process
+		assert process.stdin is not None
 
-			# the inserted command \fastrecompileinputreadline need to read the filename from stdin
+		# the inserted command \fastrecompileinputreadline need to read the filename from stdin
+		process.stdin.write(self.filename.encode('u8') + b"\n")
+		process.stdin.flush()
+
+		self._copy_stdout_thread: Optional[threading.Thread]=None
+
+	def finish(self)->bool:
+		"""
+		Returns whether the compiler returns 0.
+		Note that it's possible for the compiler to return 0 and yet the compilation failed, if no PDF is generated.
+		"""
+		process=self._process
+		assert process is not None
+		self._process=None
+
+		# check if the preamble is still the same
+		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_text()):
+			raise PreambleChangedError()
+
+		# send one line to the process to wake it up
+		# (before this step, process stdout must be suppressed)
+		assert process.stdin is not None
+		assert process.stdout is not None
+		try:
 			process.stdin.write(self.filename.encode('u8') + b"\n")
 			process.stdin.flush()
+			if self.close_stdin:
+				process.stdin.close()
+		except BrokenPipeError:
+			# might happen if the process exits before reaching the \fastrecompileendpreamble line
+			pass
 
-			# wait for recompile() call
-			yield
+		self.compiling_callback()
 
-			# check if the preamble is still the same
-			if preamble!=extract_preamble(Path(self.filename).read_text()):
-				raise PreambleChangedError()
+		# start a new thread to copy process stdout to sys.stdout
+		# the copy should be done such that partially-written lines get copied immediately when they're written
+		def copy_stdout_work()->None:
+			while True:
+				assert process is not None
+				assert process.stdout is not None
+				# this is a bit inefficient in that it reads one byte at a time
+				# but I don't know how to do it better
+				content=process.stdout.read(1)
+				if content==b"":
+					break
+				sys.stdout.buffer.write(content)
+				sys.stdout.buffer.flush()
+		self._copy_stdout_thread=threading.Thread(target=copy_stdout_work)
+		self._copy_stdout_thread.start()
 
-			# send one line to the process to wake it up
-			# (before this step, process stdout must be suppressed)
-			try:
-				process.stdin.write(self.filename.encode('u8') + b"\n")
-				process.stdin.flush()
-				if self.close_stdin:
-					process.stdin.close()
-			except BrokenPipeError:
-				# might happen if the process exits before reaching the \fastrecompileendpreamble line
-				pass
+		# wait for the process to finish
+		process.wait()
 
-			self.compiling_callback()
-
-			# start a new thread to copy process stdout to sys.stdout
-			# the copy should be done such that partially-written lines get copied immediately when they're written
-			def copy_stdout_work()->None:
-				while True:
-					assert process.stdout is not None
-					# this is a bit inefficient in that it reads one byte at a time
-					# but I don't know how to do it better
-					content=process.stdout.read(1)
-					if content==b"":
-						break
-					sys.stdout.buffer.write(content)
-					sys.stdout.buffer.flush()
-			copy_stdout_thread=threading.Thread(target=copy_stdout_work)
-			copy_stdout_thread.start()
-
-			# wait for the process to finish
-			process.wait()
-		finally:
-			process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
-
-		copy_stdout_thread.join()
 		return process.returncode==0
+
+	def __exit__(self, exc_type, exc_value, traceback)->None:
+		if self._process is not None:
+			self._process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
+		if self._copy_stdout_thread is not None:
+			self._copy_stdout_thread.join()
 
 tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
 tmpdir.mkdir(parents=True, exist_ok=True)
@@ -268,10 +277,9 @@ class CompilationDaemonLowLevelTempOutputDir:
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
 
-	def __post_init__(self)->None:
+	def __enter__(self)->None:
 		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
-
 
 		env=None
 
@@ -298,7 +306,6 @@ class CompilationDaemonLowLevelTempOutputDir:
 			env["TEXINPUTS"]=str(self.output_directory) + os.pathsep + env.get("TEXINPUTS", "")
 			# https://tex.stackexchange.com/a/93733/250119 -- if it's originally empty append a trailing : or ;
 
-
 		self._daemon=CompilationDaemonLowLevel(
 			filename=self.filename,
 			executable=self.executable,
@@ -312,20 +319,22 @@ class CompilationDaemonLowLevelTempOutputDir:
 			compiling_callback=self.compiling_callback,
 			env=env,
 			)
+		self._daemon.__enter__()
 
 	def finish(self)->bool:
-		try:
-			result=self._daemon.finish()
-			# copy back all the generated files in the target folder to the original output directory
-			for file in self._temp_output_dir_path.iterdir():
-				if file.is_file():
-					shutil.copy2(file, self.output_directory)
-			# note: this is inefficient because it copies instead of moves
-			# note: currently files generated in subdirectories not supported
-			return result
-		finally:
-			shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
-			self._temp_output_dir.cleanup()
+		result=self._daemon.finish()
+		# copy back all the generated files in the target folder to the original output directory
+		for file in self._temp_output_dir_path.iterdir():
+			if file.is_file():
+				shutil.copy2(file, self.output_directory)
+		# note: this is inefficient because it copies instead of moves
+		# note: currently files generated in subdirectories not supported
+		return result
+
+	def __exit__(self, exc_type, exc_value, traceback)->None:
+		self._daemon.__exit__(exc_type, exc_value, traceback)
+		shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
+		self._temp_output_dir.cleanup()
 
 
 @dataclass
@@ -404,17 +413,19 @@ class CompilationDaemon:
 
 
 			try:
-				if immediately_recompile: immediately_recompile=False
-				else:
-					recompile_preamble=yield
-					if recompile_preamble:
-						sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
-						immediately_recompile=True
-						continue
+				with daemon:
+					if immediately_recompile: immediately_recompile=False
+					else:
+						recompile_preamble=yield
+						if recompile_preamble:
+							sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
+							immediately_recompile=True
+							continue
 
-				if no_preamble_error_instance is not None:
-					raise no_preamble_error_instance
-				return_0=daemon.finish()
+					if no_preamble_error_instance is not None:
+						raise no_preamble_error_instance
+					return_0=daemon.finish()
+
 				self.finish_callback(return_0=return_0)
 
 				try:
