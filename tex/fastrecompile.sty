@@ -22,7 +22,7 @@
 }
 
 
-% Read a line from standard input then \input from it. (using \input instead of the primitive)
+% Read a line from standard input then \input from it. (using \input{...} instead of the primitive in order to update the current file name seen to TeX)
 \cs_new_protected:Npn \fastrecompileinputreadline {
   \__fast_recompile_read_str:
   \input {\__fast_recompile_file_name_str}

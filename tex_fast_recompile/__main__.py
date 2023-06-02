@@ -16,6 +16,7 @@ import tempfile
 import os
 #import atexit
 import psutil  # type: ignore
+from .util import *
 
 @dataclass
 class Preamble:
@@ -156,21 +157,22 @@ class CompilationDaemonLowLevel:
 	"""
 
 	def __enter__(self)->None:
+		filename_escaped=escape_filename_for_input(self.filename)  # may raise error on invalid filename, must do before the below (check file exist)
 		preamble=extract_preamble(Path(self.filename).read_text())
 		self._preamble_at_start=preamble
 
 		if preamble.implicit:
-			assert '"' not in self.filename
 			compiling_filename=(
 				r"\RequirePackage{fastrecompile}"
 				r"\fastrecompilesetimplicitpreamble"
-				r"\fastrecompileinputreadline"
+				r"\input{" + filename_escaped + "}"
 				)
 		else:
 			compiling_filename=(
 				r"\RequirePackage{fastrecompile}"
-				r"\fastrecompileinputreadline"
+				r"\input{" + filename_escaped + "}"
 				)
+		# we use \input{...} instead of primitive \@@input so the file name change is visible to LaTeX
 
 
 		# build the command
@@ -190,10 +192,6 @@ class CompilationDaemonLowLevel:
 		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
 		self._process: Optional[subprocess.Popen[bytes]]=process
 		assert process.stdin is not None
-
-		# the inserted command \fastrecompileinputreadline need to read the filename from stdin
-		process.stdin.write(self.filename.encode('u8') + b"\n")
-		process.stdin.flush()
 
 		self._copy_stdout_thread: Optional[threading.Thread]=None
 

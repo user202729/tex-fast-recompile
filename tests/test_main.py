@@ -19,7 +19,7 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], 
 
 		assert waiting_for in line_predicates
 		for remaining in line_predicates:
-			if remaining!=waiting_for: assert not remaining(line), "Unexpected line {line}"
+			if remaining!=waiting_for: assert not remaining(line), f"Unexpected line {line}"
 
 		if waiting_for(line):
 			expects.pop()
@@ -51,6 +51,7 @@ def expect_rerunning(line: str)->bool:
 
 
 
+
 def ensure_pdf_content_file(file: Path, content: str)->None:
 	txt_file=file.with_suffix(".txt")
 	pdf_file=file.with_suffix(".pdf")
@@ -72,7 +73,7 @@ def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_a
 		"--failure-cmd=echo ========failure",
 		"--output-directory="+str(output_dir),
 		*extra_args,
-		"pdflatex", tmp_file], stdout=subprocess.PIPE, text=True, cwd=tmp_path)
+		"pdflatex", "--", filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmp_path)
 	return tmp_file, process
 
 
@@ -114,9 +115,19 @@ def test_recompile(tmp_path: Path)->None:
 	ensure_pdf_content(tmp_path, "page[2]")
 
 # note that `"` in file name is not supported
-@pytest.mark.parametrize("filename", ["{", "}%", "#  &\\:≡", "--help"])
+@pytest.mark.parametrize("filename,valid", [
+	("{~", True),
+	("}|%", True),
+	("#  &^_\\:≡", True),
+	("--help", True),
+
+	("$TEXMFHOME", False),
+	("|cat a.tex", False),
+	("~", False),
+	("\"", False),
+	])
 @pytest.mark.parametrize("temp_output_directory", [True, False])
-def test_weird_file_name(tmp_path: Path, filename: str, temp_output_directory: bool)->None:
+def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output_directory: bool)->None:
 	_, process=prepare_process(
 			tmp_path, r"""
 			\documentclass{article}
@@ -127,6 +138,10 @@ def test_weird_file_name(tmp_path: Path, filename: str, temp_output_directory: b
 			filename=filename+".tex",
 			extra_args=["--temp-output-directory"] if temp_output_directory else [],
 			)
+	if not valid:
+		process.wait(timeout=2)
+		assert "AssertionError" in process.stderr.read()
+		return
 	ensure_print_lines(process, [expect_success])
 	process.kill()
 	ensure_pdf_content_file(tmp_path/"output"/(filename+".pdf"), "helloworld")
