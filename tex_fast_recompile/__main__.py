@@ -423,7 +423,7 @@ class CompilationDaemon:
 					log_text=b""
 
 				if b"Rerun to get" in log_text:
-					print("Rerunning.")
+					print("Rerunning." + "\n"*args.num_separation_lines)
 					immediately_recompile=True
 					continue
 
