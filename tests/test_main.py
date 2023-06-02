@@ -61,8 +61,8 @@ def ensure_pdf_content_file(file: Path, content: str)->None:
 def ensure_pdf_content(folder: Path, content: str)->None:
 	ensure_pdf_content_file(folder/"output"/"a.txt", content)
 
-def prepare_process(tmp_path: Path, content: str)->tuple[Path, subprocess.Popen]:
-	tmp_file=tmp_path/"a.tex"
+def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, subprocess.Popen]:
+	tmp_file=tmp_path/filename
 	tmp_file.write_text(textwrap.dedent(content))
 	output_dir=tmp_path/"output"
 	output_dir.mkdir()
@@ -71,6 +71,7 @@ def prepare_process(tmp_path: Path, content: str)->tuple[Path, subprocess.Popen]
 		"--success-cmd=echo ========success",
 		"--failure-cmd=echo ========failure",
 		"--output-directory="+str(output_dir),
+		*extra_args,
 		"pdflatex", tmp_file], stdout=subprocess.PIPE, text=True, cwd=tmp_path)
 	return tmp_file, process
 
@@ -111,3 +112,22 @@ def test_recompile(tmp_path: Path)->None:
 	"""))
 	ensure_print_lines(process, [expect_rerunning, expect_success])
 	ensure_pdf_content(tmp_path, "page[2]")
+
+# note that `"` in file name is not supported
+@pytest.mark.parametrize("filename", ["{", "}%", "#  &\\:≡", "--help"])
+@pytest.mark.parametrize("temp_output_directory", [True, False])
+def test_weird_file_name(tmp_path: Path, filename: str, temp_output_directory: bool)->None:
+	_, process=prepare_process(
+			tmp_path, r"""
+			\documentclass{article}
+			\begin{document}
+			helloworld
+			\end{document}
+			""",
+			filename=filename+".tex",
+			extra_args=["--temp-output-directory"] if temp_output_directory else [],
+			)
+	ensure_print_lines(process, [expect_success])
+	process.kill()
+	ensure_pdf_content_file(tmp_path/"output"/(filename+".pdf"), "helloworld")
+
