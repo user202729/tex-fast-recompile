@@ -7,6 +7,7 @@ import subprocess
 from typing import Callable
 
 LinePredicate=Callable[[str], bool]
+line_predicates: list[LinePredicate]=[]
 
 def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], kill: bool=True)->None:
 	timer=Timer(1, process.kill)
@@ -14,7 +15,13 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], 
 	expects=expects[::-1]
 	assert process.stdout is not None
 	for line in process.stdout:
-		if expects[-1](line):
+		waiting_for=expects[-1]
+
+		assert waiting_for in line_predicates
+		for remaining in line_predicates:
+			if remaining!=waiting_for: assert not remaining(line), "Unexpected line {line}"
+
+		if waiting_for(line):
 			expects.pop()
 			if not expects: break
 	else:
@@ -25,30 +32,34 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], 
 	if kill:
 		process.kill()
 
+
+def possible_line_content(f: LinePredicate)->LinePredicate:
+	line_predicates.append(f)
+	return f
+
+@possible_line_content
 def expect_failure(line: str)->bool:
 	return "========failure" in line
 
+@possible_line_content
 def expect_success(line: str)->bool:
 	return "========success" in line
 
+@possible_line_content
 def expect_rerunning(line: str)->bool:
 	return "Rerunning" in line
 
-def but_not(f: LinePredicate, *args: LinePredicate)->LinePredicate:
-	"""
-	Return a LinePredicate that returns the same value as f, but assert that none of args hold.
-	"""
-	assert args
-	def result(line: str)->bool:
-		for g in args: assert not g(line)
-		return f(line)
-	return result
+
+
+def ensure_pdf_content_file(file: Path, content: str)->None:
+	txt_file=file.with_suffix(".txt")
+	pdf_file=file.with_suffix(".pdf")
+	txt_file.unlink(missing_ok=True)
+	subprocess.run(["pdftotext", pdf_file])
+	assert content in txt_file.read_text()
 
 def ensure_pdf_content(folder: Path, content: str)->None:
-	(folder/"output"/"a.txt").unlink(missing_ok=True)
-	subprocess.run(["pdftotext", folder/"output"/"a.pdf"])
-	assert content in (folder/"output"/"a.txt").read_text()
-
+	ensure_pdf_content_file(folder/"output"/"a.txt", content)
 
 def prepare_process(tmp_path: Path, content: str)->tuple[Path, subprocess.Popen]:
 	tmp_file=tmp_path/"a.tex"
@@ -83,22 +94,13 @@ def test_tex_error(tmp_path: Path)->None:
 	ensure_print_lines(process, [expect_failure])
 
 def test_recompile(tmp_path: Path)->None:
-	_, process=prepare_process(tmp_path, r"""
-	\documentclass{article}
-	\begin{document}
-	\label{abc}page[\pageref{abc}]
-	\end{document}
-	""")
-	ensure_print_lines(process, [but_not(expect_rerunning, expect_success), but_not(expect_success, expect_rerunning)])
-
-def test_recompile(tmp_path: Path)->None:
 	tmp_file, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
 	\begin{document}
 	\label{abc}page[\pageref{abc}]
 	\end{document}
 	""")
-	ensure_print_lines(process, [but_not(expect_rerunning, expect_success), but_not(expect_success, expect_rerunning)], kill=False)
+	ensure_print_lines(process, [expect_rerunning, expect_success], kill=False)
 	ensure_pdf_content(tmp_path, "page[1]")
 	tmp_file.write_text(textwrap.dedent(r"""
 	\documentclass{article}
@@ -107,7 +109,5 @@ def test_recompile(tmp_path: Path)->None:
 	\label{abc}page[\pageref{abc}]
 	\end{document}
 	"""))
-	ensure_print_lines(process, [
-		but_not(expect_rerunning, expect_success),
-		but_not(expect_success, expect_rerunning)])
+	ensure_print_lines(process, [expect_rerunning, expect_success])
 	ensure_pdf_content(tmp_path, "page[2]")

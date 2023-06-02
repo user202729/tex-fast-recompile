@@ -85,7 +85,7 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--shell-escape",action="store_true", help="Enable shell escape")
 	parser.add_argument("--8bit",action="store_true", help="Same as --8bit to engines")
 	parser.add_argument("--recorder", action="store_true", help="Same as --recorder to engines")
-	parser.add_argument("--extra-args", action="append", help=
+	parser.add_argument("--extra-args", action="append", default=[], help=
 					 "Extra arguments, not in the list above, to pass to the executable. "
 					 "For example you can specify --extra-args=-interaction=batchmode to set the interaction mode. "
 					 "Note that other arguments, such as jobname or output-directory, "
