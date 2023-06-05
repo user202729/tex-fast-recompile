@@ -202,20 +202,21 @@ class CompilationDaemonLowLevel:
 		command+=self.extra_commands
 
 		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
-		self._process: Optional[subprocess.Popen[bytes]]=process
+		self._process: subprocess.Popen[bytes]=process
 		assert process.stdin is not None
 
 		self._copy_stdout_thread: Optional[threading.Thread]=None
+		self._finished=False
 
 	def finish(self)->bool:
 		"""
 		Returns whether the compiler returns 0.
 		Note that it's possible for the compiler to return 0 and yet the compilation failed, if no PDF is generated.
 		"""
-		process=self._process
-		assert process is not None
-		self._process=None
+		assert not self._finished
+		self._finished=True
 
+		process=self._process
 		# check if the preamble is still the same
 		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_text(encoding='u8')):
 			raise PreambleChangedError()
@@ -244,7 +245,6 @@ class CompilationDaemonLowLevel:
 		# the copy should be done such that partially-written lines get copied immediately when they're written
 		def copy_stdout_work()->None:
 			while True:
-				assert process is not None
 				assert process.stdout is not None
 				# this is a bit inefficient in that it reads one byte at a time
 				# but I don't know how to do it better
@@ -262,8 +262,7 @@ class CompilationDaemonLowLevel:
 		return process.returncode==0
 
 	def __exit__(self, exc_type, exc_value, traceback)->None:
-		if self._process is not None:
-			self._process.kill()  # may happen if the user send KeyboardInterrupt or the preamble changed
+		self._process.kill()
 		if self._copy_stdout_thread is not None:
 			self._copy_stdout_thread.join()
 
