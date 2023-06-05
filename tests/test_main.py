@@ -5,6 +5,8 @@ from pathlib import Path
 import textwrap
 import subprocess
 from typing import Callable
+import time
+import psutil  # type: ignore
 
 LinePredicate=Callable[[str], bool]
 line_predicates: list[LinePredicate]=[]
@@ -14,7 +16,9 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], 
 	timer.start()
 	expects=expects[::-1]
 	assert process.stdout is not None
+	collected_lines=[]
 	for line in process.stdout:
+		collected_lines.append(line)
 		waiting_for=expects[-1]
 
 		assert waiting_for in line_predicates
@@ -26,7 +30,7 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], 
 			if not expects: break
 	else:
 		if not timer.is_alive():
-			assert False, "Timeout without seeing some lines"
+			assert False, f"Timeout without seeing some lines -- seen lines are {collected_lines}"
 		assert False, "Process exit voluntarily but some expected lines are never seen??"
 	timer.cancel()
 	if kill:
@@ -49,6 +53,9 @@ def expect_success(line: str)->bool:
 def expect_rerunning(line: str)->bool:
 	return "Rerunning" in line
 
+@possible_line_content
+def expect_preamble_changed(line: str)->bool:
+	return "Preamble changed" in line
 
 
 
@@ -140,9 +147,37 @@ def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output
 			)
 	if not valid:
 		process.wait(timeout=2)
+		assert process.stderr
 		assert "AssertionError" in process.stderr.read()
 		return
 	ensure_print_lines(process, [expect_success])
 	process.kill()
 	ensure_pdf_content_file(tmp_path/"output"/(filename+".pdf"), "helloworld")
+
+def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
+	file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\begin{document}
+	helloworld
+	\end{document}
+	""")
+	ensure_print_lines(process, [expect_success], kill=False)
+
+	time.sleep(1)
+	assert count_child_processes(process)==1
+
+	file.write_text(textwrap.dedent(r"""
+	\documentclass{article}
+	\usepackage{amsmath}
+	\begin{document}
+	helloworld
+	\end{document}
+	"""))
+	ensure_print_lines(process, [expect_preamble_changed, expect_success], kill=False)
+	time.sleep(1)
+	assert count_child_processes(process)==1  # if this is 2 then there's the resource leak
+	process.kill()
+
+def count_child_processes(process: subprocess.Popen)->int:
+	return len(psutil.Process(process.pid).children(recursive=True))
 
