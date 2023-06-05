@@ -1,5 +1,7 @@
 # tex-fast-recompile
 
+[![PyPI](https://img.shields.io/pypi/v/tex-fast-recompile?style=flat)](https://pypi.python.org/pypi/tex-fast-recompile/)
+
 A Python module to speed up TeX compilation.
 
 This is similar to the [`mylatexformat` TeX package](https://ctan.org/pkg/mylatexformat) that it works by "speed up" some "preamble",
