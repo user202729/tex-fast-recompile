@@ -15,6 +15,7 @@ import time
 import tempfile
 import os
 #import atexit
+import enum
 import psutil  # type: ignore
 from .util import *
 
@@ -117,6 +118,12 @@ def get_parser()->argparse.ArgumentParser:
 	return parser
 
 
+class MyLatexFormatStatus(enum.Enum):
+	not_use=enum.auto()
+	precompile=enum.auto()
+	use=enum.auto()
+
+
 @dataclass
 class CompilationDaemonLowLevel:
 	"""
@@ -149,6 +156,7 @@ class CompilationDaemonLowLevel:
 	extra_commands: List[str]  # TeX commands, appended after the command-line arguments
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
+	mylatexformat_status: MyLatexFormatStatus
 	env: Optional[dict[str, str]]=None
 	"""
 	Environment variables to be passed to subprocess.Popen.
@@ -161,15 +169,24 @@ class CompilationDaemonLowLevel:
 		preamble=extract_preamble(Path(self.filename).read_text())
 		self._preamble_at_start=preamble
 
-		compiling_filename=r"\RequirePackage{fastrecompile}"
-		if preamble.implicit:
-			compiling_filename+=r"\fastrecompilesetimplicitpreamble"
-		compiling_filename+=r"\input{" + filename_escaped + "}"
-		# we use \input{...} instead of primitive \@@input so the file name change is visible to LaTeX
+		if self.mylatexformat_status is MyLatexFormatStatus.use:
+			compiling_filename=self.filename
+
+		else:
+			compiling_filename=r"\RequirePackage{fastrecompile}"
+			if preamble.implicit:
+				compiling_filename+=r"\fastrecompilesetimplicitpreamble"
+
+			if self.mylatexformat_status is MyLatexFormatStatus.precompile:
+				compiling_filename+=r"\input{mylatexformat.ltx}{" + filename_escaped + "}"
+			else:
+				compiling_filename+=r"\input{" + filename_escaped + "}"
+			# we use \input{...} instead of primitive \@@input so the file name change is visible to LaTeX
 
 
 		# build the command
 		command=[self.executable]
+		if self.mylatexformat_status is MyLatexFormatStatus.precompile: command.append("--ini")
 		command.append("--jobname="+self.jobname)
 		command.append("--output-directory="+str(self.output_directory))
 		if self.shell_escape:
@@ -179,6 +196,8 @@ class CompilationDaemonLowLevel:
 		if self.recorder:
 			command.append("--recorder")
 		command+=self.extra_args
+		if self.mylatexformat_status is MyLatexFormatStatus.precompile: command.append("&"+self.executable)
+		elif self.mylatexformat_status is MyLatexFormatStatus.use: command.append("&"+self.jobname)
 		command.append(compiling_filename)
 		command+=self.extra_commands
 
@@ -200,6 +219,11 @@ class CompilationDaemonLowLevel:
 		# check if the preamble is still the same
 		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_text()):
 			raise PreambleChangedError()
+
+		if self.mylatexformat_status is MyLatexFormatStatus.precompile:
+			# don't need to send extra line, finish is finish
+			process.wait()
+			return process.returncode==0
 
 		# send one line to the process to wake it up
 		# (before this step, process stdout must be suppressed)
@@ -269,6 +293,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 	extra_commands: List[str]
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
+	mylatexformat_status: MyLatexFormatStatus
 
 	def __enter__(self)->None:
 		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
@@ -312,6 +337,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 			close_stdin=self.close_stdin,
 			compiling_callback=self.compiling_callback,
 			env=env,
+			mylatexformat_status=self.mylatexformat_status,
 			)
 		self._daemon.__enter__()
 
@@ -401,6 +427,7 @@ class CompilationDaemon:
 						extra_commands=[],
 						close_stdin=args.close_stdin,
 						compiling_callback=self.compiling_callback,
+						mylatexformat_status=MyLatexFormatStatus.not_use,
 						)
 			except NoPreambleError as e:
 				# we swallow the error here and raise it later after the first recompile() call
