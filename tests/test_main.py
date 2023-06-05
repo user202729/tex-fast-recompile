@@ -57,7 +57,7 @@ def ensure_pdf_content_file(file: Path, content: str)->None:
 	pdf_file=file.with_suffix(".pdf")
 	txt_file.unlink(missing_ok=True)
 	subprocess.run(["pdftotext", pdf_file])
-	assert content in txt_file.read_text()
+	assert content in txt_file.read_text(encoding='u8')
 
 def ensure_pdf_content(folder: Path, content: str)->None:
 	ensure_pdf_content_file(folder/"output"/"a.txt", content)

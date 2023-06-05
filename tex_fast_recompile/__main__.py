@@ -166,7 +166,7 @@ class CompilationDaemonLowLevel:
 
 	def __enter__(self)->None:
 		filename_escaped=escape_filename_for_input(self.filename)  # may raise error on invalid filename, must do before the below (check file exist)
-		preamble=extract_preamble(Path(self.filename).read_text())
+		preamble=extract_preamble(Path(self.filename).read_text(encoding='u8'))
 		self._preamble_at_start=preamble
 
 		if self.mylatexformat_status is MyLatexFormatStatus.use:
@@ -217,7 +217,7 @@ class CompilationDaemonLowLevel:
 		self._process=None
 
 		# check if the preamble is still the same
-		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_text()):
+		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_text(encoding='u8')):
 			raise PreambleChangedError()
 
 		if self.mylatexformat_status is MyLatexFormatStatus.precompile:
