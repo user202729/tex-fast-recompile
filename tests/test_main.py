@@ -77,7 +77,7 @@ def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_a
 	tmp_file.write_text(textwrap.dedent(content))
 	output_dir=tmp_path/"output"
 	output_dir.mkdir()
-	process=subprocess.Popen([
+	process=psutil.Popen([
 		"tex_fast_recompile",
 		"--success-cmd=echo ========success",
 		"--failure-cmd=echo ========failure",
@@ -172,7 +172,7 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 	ensure_print_lines(process, [expect_success], kill=False)
 
 	time.sleep(1)
-	assert count_child_processes(process)==1
+	assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
 
 	file.write_text(textwrap.dedent(r"""
 	\documentclass{article}
@@ -183,9 +183,13 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 	"""))
 	ensure_print_lines(process, [expect_preamble_changed, expect_success], kill=False)
 	time.sleep(1)
-	assert count_child_processes(process)==1  # if this is 2 then there's the resource leak
+	assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
+	# if this is 2 then there's the resource leak
 	process.kill()
 
-def count_child_processes(process: subprocess.Popen)->int:
-	return len(psutil.Process(process.pid).children(recursive=True))
+def count_pdflatex_child_processes(process: psutil.Popen)->int:
+	return len([
+		x for x in process.children(recursive=True)
+		if Path(x.exe()).stem=="pdflatex"
+		])
 
