@@ -19,7 +19,7 @@ class Process:
 		self.args=args
 		self.kwargs=kwargs
 
-	def __enter__(self)->None:
+	def __enter__(self)->Process:
 		self.process=psutil.Popen(*self.args, **self.kwargs)
 		return self
 
@@ -103,7 +103,7 @@ def ensure_pdf_content_file(file: Path, content: str)->None:
 def ensure_pdf_content(folder: Path, content: str)->None:
 	ensure_pdf_content_file(folder/"output"/"a.txt", content)
 
-def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, subprocess.Popen]:
+def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, Process]:
 	tmp_file=tmp_path/filename
 	tmp_file.write_text(textwrap.dedent(content))
 	output_dir=tmp_path/"output"
@@ -210,7 +210,7 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 		ensure_print_lines(process, [expect_success])
 
 		time.sleep(1)
-		assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
+		assert count_pdflatex_child_processes(process)==1, process.process.children(recursive=True)
 
 		file.write_text(textwrap.dedent(r"""
 		\documentclass{article}
@@ -221,7 +221,7 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 		"""))
 		ensure_print_lines(process, [expect_preamble_changed, expect_success])
 		time.sleep(1)
-		assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
+		assert count_pdflatex_child_processes(process)==1, process.process.children(recursive=True)
 		# if this is 2 then there's the resource leak
 
 def count_pdflatex_child_processes(process: Process)->int:
