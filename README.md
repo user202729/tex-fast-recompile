@@ -20,6 +20,25 @@ Refer to https://tex.stackexchange.com/q/1137/250119 for installation instructio
 
 (currently the TeX package is not available on CTAN)
 
+### Manual installation from source (GitHub)
+
+In case I fix some bug in the latest version but forget to push to PyPI.
+
+Run from the command-line:
+
+```bash
+pip install git+https://github.com/user202729/tex-fast-recompile
+```
+
+or alternatively download the code from GitHub by clicking "Code ⯆" green button → "Download ZIP" (at the moment),
+then unzip the file and from within the folder,
+
+```bash
+pip install -e .
+```
+
+The `-e` is an "editable" install, that is if you modify the source code in the folder, you don't need to reinstall the package.
+
 ## Usage
 
 ### Note for Vim users
