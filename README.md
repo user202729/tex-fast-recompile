@@ -41,12 +41,6 @@ The `-e` is an "editable" install, that is if you modify the source code in the 
 
 ## Usage
 
-### Note for Vim users
-
-If update performance appears slow, try disabling `writebackup`, or set `backupcopy=yes`.
-(this issue happened once for me, and I haven't been able to reproduce it so far. Alternatively just try
-restarting your computer.)
-
 ### Normal mode
 
 If installed properly, an executable `tex_fast_recompile` should be available on your command-line.
@@ -75,6 +69,26 @@ For VimTeX usage, putting the following configuration in `.vimrc` usually suffic
 ```vim
 let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 ```
+
+### Note for Windows users
+
+For yet-unknown reasons, file names containing non-ASCII characters are not supported. For example the following is invalid:
+
+```bash
+tex_fast_recompile pdflatex ≡.tex
+```
+
+As a workaround, the following appears to work:
+
+```bash
+python -m tex_fast_recompile pdflatex ≡.tex
+```
+
+### Note for Vim users
+
+If update performance appears slow, try disabling `writebackup`, or set `backupcopy=yes`.
+(this issue happened once for me, and I haven't been able to reproduce it so far. Alternatively just try
+restarting your computer.)
 
 ## Limitations
 

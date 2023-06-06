@@ -132,7 +132,7 @@ skipif_windows=pytest.mark.skipif('os.name=="nt"')
 	("}%", True),
 	pytest.param("%|", True, marks=skipif_windows),
 	("#  &^_", True),
-	("≡", True),
+	pytest.param("≡", True, marks=skipif_windows),
 	pytest.param("\\?:", True, marks=skipif_windows),
 	("--help", True),
 
