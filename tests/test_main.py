@@ -36,7 +36,8 @@ class Process:
 				except psutil.NoSuchProcess: pass
 				p.wait()
 		else:
-			process.kill()
+			try: process.kill()
+			except psutil.NoSuchProcess: pass
 
 	def __exit__(self, exc_type, exc_value, traceback)->None:
 		self.kill()
@@ -227,6 +228,8 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 def count_pdflatex_child_processes(process: Process)->int:
 	return len([
 		x for x in process.process.children(recursive=True)
-		if Path(x.exe()).stem=="pdflatex"
+		if Path(x.exe()).stem in ["pdftex", "pdflatex"]
+		# on Windows it's pdflatex (exe() returns symbolic link name)
+		# on Linux it's pdftex (exe() returns original executable name)
 		])
 
