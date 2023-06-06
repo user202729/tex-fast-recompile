@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from threading import Timer
 import sys
+import os
 import pytest
 from pathlib import Path
 import textwrap
@@ -123,17 +124,22 @@ def test_recompile(tmp_path: Path)->None:
 	ensure_print_lines(process, [expect_rerunning, expect_success])
 	ensure_pdf_content(tmp_path, "page[2]")
 
+skipif_windows=pytest.mark.skipif('os.name=="nt"')
+
 # note that `"` in file name is not supported
 @pytest.mark.parametrize("filename,valid", [
 	("{~", True),
-	("}|%", True),
-	("#  &^_\\:≡", True),
+	("}%", True),
+	pytest.param("%|", True, marks=skipif_windows),
+	("#  &^_", True),
+	("≡", True),
+	pytest.param("\\?:", True, marks=skipif_windows),
 	("--help", True),
 
 	("$TEXMFHOME", False),
-	("|cat a.tex", False),
+	pytest.param("|cat a.tex", False, marks=skipif_windows),
 	("~", False),
-	("\"", False),
+	pytest.param("\"", False, marks=skipif_windows),
 	])
 @pytest.mark.parametrize("temp_output_directory", [True, False])
 def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output_directory: bool)->None:
