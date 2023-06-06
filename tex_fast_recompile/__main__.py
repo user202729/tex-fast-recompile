@@ -566,7 +566,15 @@ def main(args=None)->None:
 	daemon.recompile(False)
 
 	while True:
-		recompile_preamble=q.get()
+		if os.name=="nt":
+			# https://github.com/user202729/tex-fast-recompile/issues/15
+			while True:
+				try:
+					recompile_preamble=q.get(timeout=1)
+					break
+				except queue.Empty: continue
+		else:
+			recompile_preamble=q.get()
 		sys.stdout.write("\n"*args.num_separation_lines)
 
 		# wait for the specified delay
