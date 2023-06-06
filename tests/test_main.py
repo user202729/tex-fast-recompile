@@ -14,7 +14,33 @@ import psutil  # type: ignore
 LinePredicate=Callable[[str], bool]
 line_predicates: list[LinePredicate]=[]
 
-def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], kill: bool=True)->None:
+def kill_process(process: psutil.Popen):
+	"""
+	On Windows, killing the child process will not automatically kill the subprocess.
+	Also when the parent (pytest) process exits, the child process will not automatically exit.
+
+	For now, if all tests passes, there will be no resource leak.
+	Otherwise the child process may linger around.
+
+	Will refactor to use some context manager later.
+	"""
+	if os.name=="nt":
+		try:
+			processes = [process] + process.children(recursive=True)
+		except psutil.NoSuchProcess:
+			print("Warning: process not found?")
+			return
+
+		for p in processes:
+			print("killing", p, file=sys.stderr)
+			try: p.kill()
+			except psutil.NoSuchProcess: pass  # ??
+			print("done killing", p, file=sys.stderr)
+			p.wait()
+	else:
+		process.kill()
+
+def ensure_print_lines(process: psutil.Popen, expects: list[LinePredicate], kill: bool=True)->None:
 	timer=Timer(3, process.kill)
 	timer.start()
 	expects=expects[::-1]
@@ -41,10 +67,7 @@ def ensure_print_lines(process: subprocess.Popen, expects: list[LinePredicate], 
 
 	timer.cancel()
 	if kill:
-		try: process.kill()
-		except psutil.NoSuchProcess:
-			print("Warning: attempt to kill process failed", file=sys.stderr)
-			# TODO not sure why but seems rather harmless
+		kill_process(process)
 
 
 def possible_line_content(f: LinePredicate)->LinePredicate:
@@ -194,7 +217,7 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 	time.sleep(1)
 	assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
 	# if this is 2 then there's the resource leak
-	process.kill()
+	kill_process(process)
 
 def count_pdflatex_child_processes(process: psutil.Popen)->int:
 	return len([
