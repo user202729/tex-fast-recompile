@@ -14,39 +14,41 @@ import psutil  # type: ignore
 LinePredicate=Callable[[str], bool]
 line_predicates: list[LinePredicate]=[]
 
-def kill_process(process: psutil.Popen):
-	"""
-	On Windows, killing the child process will not automatically kill the subprocess.
-	Also when the parent (pytest) process exits, the child process will not automatically exit.
+class Process:
+	def __init__(self, *args, **kwargs)->None:
+		self.args=args
+		self.kwargs=kwargs
 
-	For now, if all tests passes, there will be no resource leak.
-	Otherwise the child process may linger around.
+	def __enter__(self)->None:
+		self.process=psutil.Popen(*self.args, **self.kwargs)
+		return self
 
-	Will refactor to use some context manager later.
-	"""
-	if os.name=="nt":
-		try:
-			processes = [process] + process.children(recursive=True)
-		except psutil.NoSuchProcess:
-			print("Warning: process not found?")
-			return
+	def kill(self)->None:
+		process=self.process
+		if os.name=="nt":
+			try:
+				processes = [process] + process.children(recursive=True)
+			except psutil.NoSuchProcess:
+				return
 
-		for p in processes:
-			print("killing", p, file=sys.stderr)
-			try: p.kill()
-			except psutil.NoSuchProcess: pass  # ??
-			print("done killing", p, file=sys.stderr)
-			p.wait()
-	else:
-		process.kill()
+			for p in processes:
+				try: p.kill()
+				except psutil.NoSuchProcess: pass
+				p.wait()
+		else:
+			process.kill()
 
-def ensure_print_lines(process: psutil.Popen, expects: list[LinePredicate], kill: bool=True)->None:
-	timer=Timer(3, process.kill)
+	def __exit__(self, exc_type, exc_value, traceback)->None:
+		self.kill()
+		
+
+def ensure_print_lines(process: Process, expects: list[LinePredicate])->None:
+	timer=Timer(5, process.kill)
 	timer.start()
 	expects=expects[::-1]
-	assert process.stdout is not None
+	assert process.process.stdout is not None
 	collected_lines=[]
-	for line in process.stdout:
+	for line in process.process.stdout:
 		collected_lines.append(line)
 		waiting_for=expects[-1]
 
@@ -58,16 +60,15 @@ def ensure_print_lines(process: psutil.Popen, expects: list[LinePredicate], kill
 			expects.pop()
 			if not expects: break
 	else:
-		if not timer.is_alive():
+		if timer.is_alive():
+			assert False, f"Process exit voluntarily but some expected lines are never seen?? -- seen lines are {collected_lines}"
+		else:
 			assert False, f"Timeout without seeing some lines -- seen lines are {collected_lines}"
-		assert False, f"Process exit voluntarily but some expected lines are never seen?? -- seen lines are {collected_lines}"
 
 	if not timer.is_alive():
 		print("Warning: all expected lines are seen but process is killed anyway", file=sys.stderr)
 
 	timer.cancel()
-	if kill:
-		kill_process(process)
 
 
 def possible_line_content(f: LinePredicate)->LinePredicate:
@@ -107,7 +108,7 @@ def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_a
 	tmp_file.write_text(textwrap.dedent(content))
 	output_dir=tmp_path/"output"
 	output_dir.mkdir()
-	process=psutil.Popen([
+	process=Process([
 		"tex_fast_recompile",
 		"--success-cmd=echo ========success",
 		"--failure-cmd=echo ========failure",
@@ -123,7 +124,8 @@ def test_empty_output_pdf(tmp_path: Path)->None:
 	\begin{document}
 	\end{document}
 	""")
-	ensure_print_lines(process, [expect_failure])
+	with process:
+		ensure_print_lines(process, [expect_failure])
 
 def test_tex_error(tmp_path: Path)->None:
 	_, process=prepare_process(tmp_path, r"""
@@ -133,7 +135,8 @@ def test_tex_error(tmp_path: Path)->None:
 	\errmessage{hello world}
 	\end{document}
 	""")
-	ensure_print_lines(process, [expect_failure])
+	with process:
+		ensure_print_lines(process, [expect_failure])
 
 def test_recompile(tmp_path: Path)->None:
 	# in newer versions of LaTeX rerunfilecheck is not necessary
@@ -144,18 +147,19 @@ def test_recompile(tmp_path: Path)->None:
 	\label{abc}page[\pageref{abc}]
 	\end{document}
 	""")
-	ensure_print_lines(process, [expect_rerunning, expect_success], kill=False)
-	ensure_pdf_content(tmp_path, "page[1]")
-	tmp_file.write_text(textwrap.dedent(r"""
-	\documentclass{article}
-	\usepackage[mainaux]{rerunfilecheck}
-	\begin{document}
-	123\clearpage
-	\label{abc}page[\pageref{abc}]
-	\end{document}
-	"""))
-	ensure_print_lines(process, [expect_rerunning, expect_success])
-	ensure_pdf_content(tmp_path, "page[2]")
+	with process:
+		ensure_print_lines(process, [expect_rerunning, expect_success])
+		ensure_pdf_content(tmp_path, "page[1]")
+		tmp_file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\usepackage[mainaux]{rerunfilecheck}
+		\begin{document}
+		123\clearpage
+		\label{abc}page[\pageref{abc}]
+		\end{document}
+		"""))
+		ensure_print_lines(process, [expect_rerunning, expect_success])
+		ensure_pdf_content(tmp_path, "page[2]")
 
 skipif_windows=pytest.mark.skipif('os.name=="nt"')
 
@@ -186,13 +190,14 @@ def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output
 			filename=filename+".tex",
 			extra_args=["--temp-output-directory"] if temp_output_directory else [],
 			)
-	if not valid:
-		process.wait(timeout=2)
-		assert process.stderr
-		assert "AssertionError" in process.stderr.read()
-		return
-	ensure_print_lines(process, [expect_success])
-	ensure_pdf_content_file(tmp_path/"output"/(filename+".pdf"), "helloworld")
+	with process:
+		if not valid:
+			process.process.wait(timeout=2)
+			assert process.process.stderr
+			assert "AssertionError" in process.process.stderr.read()
+			return
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content_file(tmp_path/"output"/(filename+".pdf"), "helloworld")
 
 def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 	file, process=prepare_process(tmp_path, r"""
@@ -201,27 +206,27 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 	helloworld
 	\end{document}
 	""")
-	ensure_print_lines(process, [expect_success], kill=False)
+	with process:
+		ensure_print_lines(process, [expect_success])
 
-	time.sleep(1)
-	assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
+		time.sleep(1)
+		assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
 
-	file.write_text(textwrap.dedent(r"""
-	\documentclass{article}
-	\usepackage{amsmath}
-	\begin{document}
-	helloworld
-	\end{document}
-	"""))
-	ensure_print_lines(process, [expect_preamble_changed, expect_success], kill=False)
-	time.sleep(1)
-	assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
-	# if this is 2 then there's the resource leak
-	kill_process(process)
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\usepackage{amsmath}
+		\begin{document}
+		helloworld
+		\end{document}
+		"""))
+		ensure_print_lines(process, [expect_preamble_changed, expect_success])
+		time.sleep(1)
+		assert count_pdflatex_child_processes(process)==1, process.children(recursive=True)
+		# if this is 2 then there's the resource leak
 
-def count_pdflatex_child_processes(process: psutil.Popen)->int:
+def count_pdflatex_child_processes(process: Process)->int:
 	return len([
-		x for x in process.children(recursive=True)
+		x for x in process.process.children(recursive=True)
 		if Path(x.exe()).stem=="pdflatex"
 		])
 
