@@ -13,6 +13,7 @@ import shutil
 import sys
 import time
 import tempfile
+import traceback
 import os
 #import atexit
 import enum
@@ -263,6 +264,11 @@ class CompilationDaemonLowLevel:
 
 	def __exit__(self, exc_type, exc_value, traceback)->None:
 		self._process.kill()
+		try:
+			self._process.wait(timeout=1)  # on Windows this is needed to ensure process really exited -- #14
+		except subprocess.TimeoutExpired:
+			traceback.print_exc()
+			print("[Subprocess cannot be killed! Possible resource leak]")
 		if self._copy_stdout_thread is not None:
 			self._copy_stdout_thread.join()
 
@@ -352,8 +358,12 @@ class CompilationDaemonLowLevelTempOutputDir:
 
 	def __exit__(self, exc_type, exc_value, traceback)->None:
 		self._daemon.__exit__(exc_type, exc_value, traceback)
-		shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
-		self._temp_output_dir.cleanup()
+		try:
+			shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
+			self._temp_output_dir.cleanup()
+		except:
+			traceback.print_exc()
+			print(f"[Cannot clean up temporary directory at {self._temp_output_dir_path}! Possible resource leak]")
 
 
 @dataclass
