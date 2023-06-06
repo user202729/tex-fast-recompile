@@ -459,12 +459,9 @@ class CompilationDaemon:
 
 				self.finish_callback(return_0=return_0)
 
-				try:
-					log_text: bytes=(daemon.output_directory/args.jobname).with_suffix(".log").read_bytes()
-				except FileNotFoundError:
-					log_text=b""
+				log_text: bytes=(daemon.output_directory/args.jobname).with_suffix(".log").read_bytes()
 
-				if b"Rerun to get" in log_text:
+				if b"Rerun to get" in log_text or b"Rerun." in log_text:
 					print("Rerunning." + "\n"*args.num_separation_lines)
 					immediately_recompile=True
 					continue
