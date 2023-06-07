@@ -92,6 +92,9 @@ restarting your computer.)
 
 ## Limitations
 
+* While it's not necessary for the content to be well-formed UTF-8, the file encoding must be compatible with ASCII.
+(for example, UTF-16 is not compatible)
+
 * If VimTeX is used, the latexmk (emulation) is forcefully killed when compilation stops.
 In that case, the temporary directory is not cleaned, and over time it may clutter the temporary directory.
 

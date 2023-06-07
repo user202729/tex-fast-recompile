@@ -107,9 +107,12 @@ def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 def ensure_pdf_content(folder: Path, content: str, strict: bool=False)->None:
 	ensure_pdf_content_file(folder/"output"/"a.txt", content, strict=strict)
 
-def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, Process]:
+def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, Process]:
 	tmp_file=tmp_path/filename
-	tmp_file.write_text(textwrap.dedent(content))
+	if isinstance(content, str):
+		tmp_file.write_text(textwrap.dedent(content))
+	else:
+		tmp_file.write_bytes(content)  # dedent not supported
 	output_dir=tmp_path/"output"
 	output_dir.mkdir()
 	process=Process([
@@ -187,7 +190,18 @@ def test_hyperref_shipout_begindocument(tmp_path: Path, temp_output_dir: bool, e
 		else:
 			ensure_pdf_content(tmp_path, "helloworld")
 
-
+def test_weird_file_content(tmp_path: Path)->None:
+	tmp_file, process=prepare_process(tmp_path, textwrap.dedent(r"""
+	\documentclass{article}
+	\begin{document}
+	helloworld
+	\makeatletter
+	\@gobble """ + '\xff' + r"""
+	\end{document}
+	""").encode("latin1"))
+	with process:
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "helloworld")
 
 skipif_windows=pytest.mark.skipif('os.name=="nt"')
 

@@ -22,7 +22,7 @@ from .util import *
 
 @dataclass
 class Preamble:
-	content: list[str]
+	content: list[bytes]
 	implicit: bool  # if implicit, it ends at (and includes) \begin{document} line; otherwise, it ends at (and includes) \fastrecompileendpreamble line
 
 
@@ -30,7 +30,7 @@ class NoPreambleError(Exception):
 	pass
 
 
-def extract_preamble(text: str)->Preamble:
+def extract_preamble(text: bytes)->Preamble:
 	"""
 	Extract preamble information from text. Might raise NoPreambleError(error message: str) if fail.
 	"""
@@ -38,9 +38,9 @@ def extract_preamble(text: str)->Preamble:
 	# split into lines
 	lines=text.splitlines()
 
-	search_str1=r"\fastrecompileendpreamble"
-	search_str2=r"\csname fastrecompileendpreamble\endcsname"
-	search_str3=r"\begin{document}"
+	search_str1=rb"\fastrecompileendpreamble"
+	search_str2=rb"\csname fastrecompileendpreamble\endcsname"
+	search_str3=rb"\begin{document}"
 
 	count1=lines.count(search_str1)
 	count2=lines.count(search_str2)
@@ -169,7 +169,7 @@ class CompilationDaemonLowLevel:
 
 	def __enter__(self)->None:
 		filename_escaped=escape_filename_for_input(self.filename)  # may raise error on invalid filename, must do before the below (check file exist)
-		preamble=extract_preamble(Path(self.filename).read_text(encoding='u8'))
+		preamble=extract_preamble(Path(self.filename).read_bytes())
 		self._preamble_at_start=preamble
 
 		if self.mylatexformat_status is MyLatexFormatStatus.use:
@@ -224,7 +224,7 @@ class CompilationDaemonLowLevel:
 
 		process=self._process
 		# check if the preamble is still the same
-		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_text(encoding='u8')):
+		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_bytes()):
 			raise PreambleChangedError()
 
 		if self.mylatexformat_status is MyLatexFormatStatus.precompile:
