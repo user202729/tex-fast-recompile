@@ -159,6 +159,8 @@ class CompilationDaemonLowLevel:
 	compiling_callback: Callable[[], None]
 	mylatexformat_status: MyLatexFormatStatus
 	env: Optional[dict[str, str]]=None
+	pause_at_begindocument_end: bool=False  # by default it pauses at begindocument/before which is safer
+	# pausing at begindocument/end is faster but breaks hyperref
 	"""
 	Environment variables to be passed to subprocess.Popen.
 	Note that this should either be None (inherit parent's environment variables) or
@@ -174,9 +176,12 @@ class CompilationDaemonLowLevel:
 			compiling_filename=self.filename
 
 		else:
-			compiling_filename=r"\RequirePackage{fastrecompile}"
+			compiling_filename=r"\RequirePackage{fastrecompile}[0.3.0]"
 			if preamble.implicit:
-				compiling_filename+=r"\fastrecompilesetimplicitpreamble"
+				if self.pause_at_begindocument_end:
+					compiling_filename+=r"\fastrecompilesetimplicitpreambleii"
+				else:
+					compiling_filename+=r"\fastrecompilesetimplicitpreamble"
 
 			if self.mylatexformat_status is MyLatexFormatStatus.precompile:
 				compiling_filename+=r"\input{mylatexformat.ltx}{" + filename_escaped + "}"
@@ -262,7 +267,7 @@ class CompilationDaemonLowLevel:
 
 		return process.returncode==0
 
-	def __exit__(self, exc_type, exc_value, traceback)->None:
+	def __exit__(self, exc_type, exc_value, tb)->None:
 		self._process.kill()
 		try:
 			self._process.wait(timeout=1)  # on Windows this is needed to ensure process really exited -- #14
@@ -301,14 +306,13 @@ class CompilationDaemonLowLevelTempOutputDir:
 	mylatexformat_status: MyLatexFormatStatus
 
 	def __enter__(self)->None:
-		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
+		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-", ignore_cleanup_errors=False)  # we manually delete it in __exit__ after killing the latex subprocess
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
+		self._temp_output_dir.__enter__()
 
 		env=None
 
 		# https://stackoverflow.com/questions/19023238/why-python-uppercases-all-environment-variables-in-windows
-
-
 
 		if os.pathsep in str(self.output_directory):
 			print(f"Warning: Output directory {self.output_directory} contains invalid character {os.pathsep}")
@@ -343,6 +347,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 			compiling_callback=self.compiling_callback,
 			env=env,
 			mylatexformat_status=self.mylatexformat_status,
+			pause_at_begindocument_end=True,
 			)
 		self._daemon.__enter__()
 
@@ -356,14 +361,16 @@ class CompilationDaemonLowLevelTempOutputDir:
 		# note: currently files generated in subdirectories not supported
 		return result
 
-	def __exit__(self, exc_type, exc_value, traceback)->None:
-		self._daemon.__exit__(exc_type, exc_value, traceback)
+	def __exit__(self, exc_type, exc_value, tb)->None:
+		self._daemon.__exit__(exc_type, exc_value, tb)
 		try:
 			shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
-			self._temp_output_dir.cleanup()
+		except FileNotFoundError:
+			pass
 		except:
 			traceback.print_exc()
 			print(f"[Cannot clean up temporary directory at {self._temp_output_dir_path}! Possible resource leak]")
+		self._temp_output_dir.__exit__(exc_type, exc_value, tb)
 
 
 @dataclass
