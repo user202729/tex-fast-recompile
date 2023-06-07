@@ -79,7 +79,7 @@ def get_parser()->argparse.ArgumentParser:
 					 "even with hyperref package enabled for an extra speedup, but this will break if "
 					 "some other package depends on the precise output directory."
 					 )
-	parser.add_argument("--no-temp-output-directory", action="store_false", dest="temp-output-directory")
+	parser.add_argument("--no-temp-output-directory", action="store_false", dest="temp_output_directory")
 	parser.add_argument("--auto-rerun", type=int, default=5, help=
 					 "Run another LaTeX pass automatically (up to specified number of runs) "
 					 "if some string such as 'Rerun to get' is detected in the log file. "
@@ -103,14 +103,14 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--close-stdin", action="store_true", help="Close stdin of the TeX process so that it exits out on error. This is the default.",
 					 default=True)
 	parser.add_argument("--show-time", action="store_true", help="Show time taken of compilation", default=True)
-	parser.add_argument("--no-show-time", action="store_false", dest="show-time")
-	parser.add_argument("--no-close-stdin", action="store_false", dest="close-stdin", help="Reverse of --close-stdin. Currently not very well-supported.")
+	parser.add_argument("--no-show-time", action="store_false", dest="show_time")
+	parser.add_argument("--no-close-stdin", action="store_false", dest="close_stdin", help="Reverse of --close-stdin. Currently not very well-supported.")
 	parser.add_argument("--copy-output", type=Path, help="After compilation finishes, copy the output file to the given path")
 	parser.add_argument("--copy-log", type=Path,
 					 help="After compilation finishes, copy the log file to the given path. "
 					 "If you want to read the log file, you must use this option and read it at the target path.")
 	parser.add_argument("--abort-on-preamble-change", action="store_true", help="Abort compilation if the preamble changed.")
-	parser.add_argument("--continue-on-preamble-change", action="store_false", dest="abort-on-preamble-change", help="Continue compilation if the preamble changed. Reverse of --abort-on-preamble-change.")
+	parser.add_argument("--continue-on-preamble-change", action="store_false", dest="abort_on_preamble_change", help="Continue compilation if the preamble changed. Reverse of --abort-on-preamble-change.")
 	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
 	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation.")
 	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")

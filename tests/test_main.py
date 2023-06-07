@@ -94,15 +94,18 @@ def expect_preamble_changed(line: str)->bool:
 
 
 
-def ensure_pdf_content_file(file: Path, content: str)->None:
+def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 	txt_file=file.with_suffix(".txt")
 	pdf_file=file.with_suffix(".pdf")
 	txt_file.unlink(missing_ok=True)
-	subprocess.run(["pdftotext", pdf_file])
-	assert content in txt_file.read_text(encoding='u8')
+	subprocess.run(["pdftotext", pdf_file], check=True)
+	if strict:
+		assert content==txt_file.read_text(encoding='u8')
+	else:
+		assert content in txt_file.read_text(encoding='u8')
 
-def ensure_pdf_content(folder: Path, content: str)->None:
-	ensure_pdf_content_file(folder/"output"/"a.txt", content)
+def ensure_pdf_content(folder: Path, content: str, strict: bool=False)->None:
+	ensure_pdf_content_file(folder/"output"/"a.txt", content, strict=strict)
 
 def prepare_process(tmp_path: Path, content: str, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, Process]:
 	tmp_file=tmp_path/filename
@@ -161,6 +164,30 @@ def test_recompile(tmp_path: Path)->None:
 		"""))
 		ensure_print_lines(process, [expect_rerunning, expect_success])
 		ensure_pdf_content(tmp_path, "page[2]")
+
+
+@pytest.mark.parametrize("temp_output_dir", [True, False])
+@pytest.mark.parametrize("explicit_end_preamble_mark", [True, False])
+def test_hyperref_shipout_begindocument(tmp_path: Path, temp_output_dir: bool, explicit_end_preamble_mark: bool)->None:
+	tmp_file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\usepackage{hyperref}
+	\begin{document}
+	""" + (r'\fastrecompileendpreamble' if explicit_end_preamble_mark else '') +
+	r"""
+	helloworld
+	\end{document}
+	""", extra_args=[] if temp_output_dir else ["--no-temp-output-directory"])
+	with process:
+		ensure_print_lines(process, [expect_rerunning, expect_success])  # rerun because of hyperref write outline to a.out
+		time.sleep(4)
+		if explicit_end_preamble_mark and not temp_output_dir:
+			with pytest.raises(subprocess.CalledProcessError):
+				ensure_pdf_content(tmp_path, "", strict=True)
+		else:
+			ensure_pdf_content(tmp_path, "helloworld")
+
+
 
 skipif_windows=pytest.mark.skipif('os.name=="nt"')
 
