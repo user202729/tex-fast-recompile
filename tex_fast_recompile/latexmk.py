@@ -23,9 +23,11 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("-pdflua", help="Use lualatex", dest="tex_executable", action="store_const", const="lualatex")
 
 
-	parser.add_argument("-outdir", help="Set the output directory")
+	parser.add_argument("-outdir", "-output-directory", help="Set the output directory")
+	parser.add_argument("-auxdir", "-aux-directory", help="Set the auxiliary directory. Currently must be empty or equal to output directory")
 	parser.add_argument("-pvc", required=True, action="store_true", help="Same as -pvc flag in latexmk")
 	parser.add_argument("-view", help="Set the viewer (unsupported, will be silently ignored)")
+	parser.add_argument("-emulate-aux-dir", action="store_true", help="(silently ignored)")
 	parser.add_argument("-e", action="append", default=[], help="Compatibility layer for latexmk -e option (initialization code)")
 	parser.add_argument("--extra-tex-fast-recompile-args", action="append", default=[], help="Extra arguments to pass to tex_fast_recompile script")
 	parser.add_argument("filename", help="The file to compile")
@@ -49,6 +51,11 @@ def main()->None:
 		tex_fast_recompile_args.append(f"--extra-args=--interaction={args.interaction}")
 	if args.outdir:
 		tex_fast_recompile_args.append(f"--output-directory={args.outdir}")
+	if args.auxdir:
+		if not args.outdir:
+			tex_fast_recompile_args.append(f"--output-directory={args.outdir}")
+		elif args.auxdir!=args.outdir:
+			raise NotImplementedError(f"auxdir={args.auxdir} and outdir={args.outdir} are different, not supported!")
 
 	for arg in args.e:
 		"""
