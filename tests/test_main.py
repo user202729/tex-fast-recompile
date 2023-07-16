@@ -9,6 +9,7 @@ import textwrap
 import subprocess
 from typing import Callable
 import time
+import signal
 import psutil  # type: ignore
 
 LinePredicate=Callable[[str], bool]
@@ -39,17 +40,34 @@ class Process:
 			try: process.kill()
 			except psutil.NoSuchProcess: pass
 
+	def keyboard_interrupt(self)->None:
+		"""
+		TODO: this is not identical to pressing ^C on terminal, it only send to top process?
+		"""
+		self.process.send_signal(signal.SIGINT)
+	
+	def must_terminate_soon(self)->None:
+		"""
+		Raise an error if the process does not terminate soon.
+		"""
+		self.process.wait(timeout=1)
+
 	def __exit__(self, exc_type, exc_value, traceback)->None:
 		self.kill()
 		
 
-def ensure_print_lines(process: Process, expects: list[LinePredicate])->None:
+def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_stdout: bool=True)->None:
 	timer=Timer(5, process.kill)
 	timer.start()
 	expects=expects[::-1]
-	assert process.process.stdout is not None
+	if use_stdout:
+		assert process.process.stdout is not None
+		stream=process.process.stdout
+	else:
+		assert process.process.stderr is not None
+		stream=process.process.stderr
 	collected_lines=[]
-	for line in process.process.stdout:
+	for line in stream:
 		collected_lines.append(line)
 		waiting_for=expects[-1]
 
@@ -92,6 +110,9 @@ def expect_rerunning(line: str)->bool:
 def expect_preamble_changed(line: str)->bool:
 	return "Preamble changed" in line
 
+@possible_line_content
+def expect_keyboard_interrupt(line: str)->bool:
+	return "KeyboardInterrupt" in line
 
 
 def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
@@ -273,4 +294,41 @@ def count_pdflatex_child_processes(process: Process)->int:
 		# on Windows it's pdflatex (exe() returns symbolic link name)
 		# on Linux it's pdftex (exe() returns original executable name)
 		])
+
+def test_keyboard_interrupt_tex(tmp_path: Path)->None:
+	"""
+	If the process is interrupted while it's compiling with a KeyboardInterrupt then the traceback should be printed
+	"""
+	_, process=prepare_process(tmp_path, r"""
+		\documentclass{article}
+		\begin{document}
+		\loop\iftrue\repeat
+		\end{document}
+		""")
+	with process:
+		time.sleep(1)
+		process.keyboard_interrupt()
+		process.must_terminate_soon()
+		ensure_print_lines(process, [expect_keyboard_interrupt], use_stdout=False)
+		assert not process.process.stderr.read()
+
+
+def test_keyboard_interrupt_python(tmp_path: Path)->None:
+	"""
+	If the process is interrupted while it's waiting for file change then the traceback should not be printed
+	"""
+	_, process=prepare_process(tmp_path, r"""
+		\documentclass{article}
+		\begin{document}
+		123
+		\end{document}
+		""")
+	with process:
+		ensure_print_lines(process, [expect_success])
+		time.sleep(0.2)
+		process.process.send_signal(signal.SIGINT)
+		process.process.wait(timeout=1)
+		assert not process.process.stdout.read()
+		assert not process.process.stderr.read()
+
 
