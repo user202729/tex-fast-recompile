@@ -306,7 +306,10 @@ class CompilationDaemonLowLevelTempOutputDir:
 	mylatexformat_status: MyLatexFormatStatus
 
 	def __enter__(self)->None:
-		self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-", ignore_cleanup_errors=False)  # we manually delete it in __exit__ after killing the latex subprocess
+		try:
+			self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-", ignore_cleanup_errors=False)  # we manually delete it in __exit__ after killing the latex subprocess
+		except TypeError:  # older Python versions does not accept the ignore_cleanup_errors parameter...
+			self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
 		self._temp_output_dir.__enter__()
 
