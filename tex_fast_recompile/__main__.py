@@ -376,28 +376,45 @@ class CompilationDaemonLowLevelTempOutputDir:
 		self._temp_output_dir.__exit__(exc_type, exc_value, tb)
 
 
+class _DaemonStatusUpdate(enum.Enum):
+	file_changed=enum.auto()
+	preamble_changed=enum.auto()
+	exiting=enum.auto()
+
+
 @dataclass
 class CompilationDaemon:
 	"""
 	Usage::
 
-		daemon = CompilationDaemon(...)  # start the compiler, wait...
-		daemon.recompile()  # finish the compilation
-		daemon.recompile()  # finish another compilation
+		daemon = CompilationDaemon(...)
+		with daemon:  # start the compiler, wait...
+			daemon.recompile()  # finish the compilation
+			daemon.recompile()  # finish another compilation
 
 	May raise ``FileNotFoundError`` if the file does not exist. 
 
 	Otherwise never raises error. Status are reported (printed) to terminal.
+
+	TODO: rewrite to avoid coroutine some time to make finalization easier?
 	"""
 	args: types.SimpleNamespace
 
-	def __post_init__(self)->None:
+	def __enter__(self)->None:
 		self._recompile_iter = self._recompile_iter_func()
 		next(self._recompile_iter)  # this makes the function run to the first time it yields
 
+	def __exit__(self, exc_type, exc_value, tb)->None:
+		try:
+			self._recompile_iter.send(_DaemonStatusUpdate.exiting)
+			raise RuntimeError("this should be unreachable")
+		except StopIteration:
+			pass
+
 	def recompile(self, recompile_preamble: bool)->None:
 		self.start_time=time.time()
-		self._recompile_iter.send(recompile_preamble)
+		self._recompile_iter.send(
+				_DaemonStatusUpdate.preamble_changed if recompile_preamble else _DaemonStatusUpdate.file_changed)
 
 	def compiling_callback(self)->None:
 		args=self.args
@@ -423,7 +440,7 @@ class CompilationDaemon:
 			# this must not error out
 			shutil.copyfile(args.generated_log_path, args.copy_log)
 
-	def _recompile_iter_func(self)->Generator[None, bool, None]:
+	def _recompile_iter_func(self)->Generator[None, _DaemonStatusUpdate, None]:
 		args=self.args
 		immediately_recompile=False
 		while True:
@@ -457,11 +474,14 @@ class CompilationDaemon:
 				with daemon:
 					if immediately_recompile: immediately_recompile=False
 					else:
-						recompile_preamble=yield
-						if recompile_preamble:
+						status=yield
+						if status==_DaemonStatusUpdate.preamble_changed:
 							sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
 							immediately_recompile=True
 							continue
+
+						if status==_DaemonStatusUpdate.exiting:
+							return
 
 					if no_preamble_error_instance is not None:
 						raise no_preamble_error_instance
@@ -486,7 +506,9 @@ class CompilationDaemon:
 			except NoPreambleError as e:
 				sys.stdout.write(f"! {e.args[0]}.\n")
 				sys.stdout.flush()
-				yield
+				status=yield
+				if status==_DaemonStatusUpdate.exiting:
+					return
 				immediately_recompile=True
 				continue
 
@@ -580,33 +602,34 @@ def main(args=None)->None:
 		raise FileNotFoundError(f"File {args.filename} not found (in directory {os.getcwd()}).")
 
 	daemon=CompilationDaemon(args)
-	daemon.recompile(False)
+	with daemon:
+		daemon.recompile(False)
 
-	while True:
-		try:
-			if os.name=="nt":
-				# https://github.com/user202729/tex-fast-recompile/issues/15
-				while True:
-					try:
-						recompile_preamble=q.get(timeout=1)
-						break
-					except queue.Empty: continue
-			else:
-				recompile_preamble=q.get()
-		except KeyboardInterrupt:
-			# user ctrl-C the process while we're not compiling, just exit without print a traceback
-			return
-		sys.stdout.write("\n"*args.num_separation_lines)
+		while True:
+			try:
+				if os.name=="nt":
+					# https://github.com/user202729/tex-fast-recompile/issues/15
+					while True:
+						try:
+							recompile_preamble=q.get(timeout=1)
+							break
+						except queue.Empty: continue
+				else:
+					recompile_preamble=q.get()
+			except KeyboardInterrupt:
+				# user ctrl-C the process while we're not compiling, just exit without print a traceback
+				return
+			sys.stdout.write("\n"*args.num_separation_lines)
 
-		# wait for the specified delay
-		time.sleep(args.extra_delay)
+			# wait for the specified delay
+			time.sleep(args.extra_delay)
 
-		# empty out the queue
-		while not q.empty():
-			tmp=q.get()
-			recompile_preamble=recompile_preamble or tmp
+			# empty out the queue
+			while not q.empty():
+				tmp=q.get()
+				recompile_preamble=recompile_preamble or tmp
 
-		daemon.recompile(recompile_preamble)
+			daemon.recompile(recompile_preamble)
 
 
 if __name__ == "__main__":
