@@ -1,9 +1,12 @@
 \ProvidesExplPackage{fastrecompile}{2023/07/16}{0.4.0}{Helper library to speed up LaTeX compilation}
-\RequirePackage{l3keys2e}
-\keys_define:nn{fastrecompile}{
-	check-version.choices:nn={ 0.4.0 }{}
+\cs_new_protected:Npn \fastrecompilecheckversion #1 {
+  \str_if_eq:nnF {#1} {0.4.0} {
+    \msg_new:nnn { fastrecompile } { wrong-version } {
+      TeX~package~version~is~0.4.0~but~Python~package~requires~version~#1.~Upgrade~both~to~latest~version.
+    }
+    \msg_error:nn {fastrecompile} {wrong-version}
+  }
 }
-\ProcessKeysOptions{fastrecompile}
 
 
 \msg_new:nnn { fastrecompile } { end-preamble-duplicate } {
