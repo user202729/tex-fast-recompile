@@ -1,4 +1,9 @@
-\ProvidesExplPackage{fastrecompile}{2023/06/07}{0.3.0}{Helper library to speed up LaTeX compilation}
+\ProvidesExplPackage{fastrecompile}{2023/07/16}{0.4.0}{Helper library to speed up LaTeX compilation}
+\RequirePackage{l3keys2e}
+\keys_define:nn{fastrecompile}{
+	check-version.choices:nn={ 0.4.0 }{}
+}
+\ProcessKeysOptions{fastrecompile}
 
 
 \msg_new:nnn { fastrecompile } { end-preamble-duplicate } {
