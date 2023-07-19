@@ -134,7 +134,7 @@ def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 def ensure_pdf_content(folder: Path, content: str, strict: bool=False)->None:
 	ensure_pdf_content_file(folder/"output"/"a.txt", content, strict=strict)
 
-def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[])->tuple[Path, Process]:
+def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[], temp_output_dir: bool=True)->tuple[Path, Process]:
 	tmp_file=tmp_path/filename
 	if isinstance(content, str):
 		tmp_file.write_text(textwrap.dedent(content))
@@ -150,6 +150,7 @@ def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", e
 		"--success-cmd=echo ========success",
 		"--failure-cmd=echo ========failure",
 		"--output-directory="+str(output_dir),
+		"--temp-output-directory" if temp_output_dir else "--no-temp-output-directory",
 		*extra_args,
 		"pdflatex", "--", filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmp_path,
 		**extra
@@ -212,7 +213,7 @@ def test_hyperref_shipout_begindocument(tmp_path: Path, temp_output_dir: bool, e
 	r"""
 	helloworld
 	\end{document}
-	""", extra_args=[] if temp_output_dir else ["--no-temp-output-directory"])
+	""", temp_output_dir=temp_output_dir)
 	with process:
 		ensure_print_lines(process, [expect_rerunning, expect_success])  # rerun because of hyperref write outline to a.out
 		time.sleep(4)
@@ -253,8 +254,8 @@ skipif_windows=pytest.mark.skipif('os.name=="nt"')
 	("~", False),
 	pytest.param("\"", False, marks=skipif_windows),
 	])
-@pytest.mark.parametrize("temp_output_directory", [True, False])
-def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output_directory: bool)->None:
+@pytest.mark.parametrize("temp_output_dir", [True, False])
+def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output_dir: bool)->None:
 	_, process=prepare_process(
 			tmp_path, r"""
 			\documentclass{article}
@@ -263,7 +264,7 @@ def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output
 			\end{document}
 			""",
 			filename=filename+".tex",
-			extra_args=["--temp-output-directory"] if temp_output_directory else [],
+			temp_output_dir=temp_output_dir,
 			)
 	with process:
 		if not valid:
@@ -346,4 +347,24 @@ def test_keyboard_interrupt_python(tmp_path: Path)->None:
 		assert not process.process.stdout.read()
 		assert not process.process.stderr.read()
 
-
+@pytest.mark.parametrize("temp_output_dir", [True, False])
+def test_beamer(tmp_path: Path, temp_output_dir: bool)->None:
+	"""
+	Make sure the begindocument/end hook is the last hook so processing of other hooks are not skipped
+	"""
+	_, process=prepare_process(tmp_path, r"""
+		\documentclass{beamer}
+		\mode<presentation>
+		{
+		  \usetheme{Warsaw}
+		}
+		\begin{document}
+		\section{Helloworld}
+		\begin{frame}
+		  123
+		\end{frame}
+		\end{document}
+		""", temp_output_dir=temp_output_dir)
+	with process:
+		ensure_print_lines(process, [expect_rerunning, expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld")

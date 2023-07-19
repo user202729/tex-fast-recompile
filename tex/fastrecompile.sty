@@ -1,8 +1,8 @@
-\ProvidesExplPackage{fastrecompile}{2023/07/16}{0.4.0}{Helper library to speed up LaTeX compilation}
+\ProvidesExplPackage{fastrecompile}{2023/07/19}{0.5.0}{Helper library to speed up LaTeX compilation}
 \cs_new_protected:Npn \fastrecompilecheckversion #1 {
-  \str_if_eq:nnF {#1} {0.4.0} {
+  \str_if_eq:nnF {#1} {0.5.0} {
     \msg_new:nnn { fastrecompile } { wrong-version } {
-      TeX~package~version~is~0.4.0~but~Python~package~requires~version~#1.~Upgrade~both~to~latest~version.
+      TeX~package~version~is~0.5.0~but~Python~package~requires~version~#1.~Upgrade~both~to~latest~version.
     }
     \msg_error:nn {fastrecompile} {wrong-version}
   }
@@ -85,8 +85,10 @@
 \cs_new_protected:Npn \fastrecompilesetimplicitpreamble {
   % first read a line from the terminal (to wait for a file to change)
   % conveniently the parent process also write the file name in this line
-  \AddToHook {begindocument/before} [fastrecompile] { \__fast_recompile_read_str: }
-  \AddToHook {begindocument/end} [fastrecompile] { \__fast_recompile_end_preamble:n {1} }
+  \AddToHook {begindocument/before} [fastrecompile] {
+    \__fast_recompile_read_str:
+    \AddToHook {begindocument/end} [fastrecompile] { \__fast_recompile_end_preamble:n {1} }
+  }
   \cs_gset_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble_duplicate_usage:
   \cs_gset_protected:Npn \fastrecompilesetimplicitpreamble {
     \msg_error:nn { fastrecompile } { duplicate-set-implicit-preamble }
@@ -95,7 +97,11 @@
 
 \cs_new_protected:Npn \fastrecompilesetimplicitpreambleii {
   % same as above but pause at begindocument/end (this breaks hyperref so only safe when temp-output-dir is on)
-  \AddToHook {begindocument/end} [fastrecompile] { \__fast_recompile_read_str: \__fast_recompile_end_preamble:n {1} }
+  \AddToHook {begindocument/before} [fastrecompile] {
+    % the nesting is such that the begindocument/end hook is (most likely) the last begindocument/end hook that is being added
+    % so the processing of other hooks are not skipped
+    \AddToHook {begindocument/end} [fastrecompile] { \__fast_recompile_read_str: \__fast_recompile_end_preamble:n {1} }
+  }
   \cs_gset_eq:NN \fastrecompileendpreamble \__fast_recompile_end_preamble_duplicate_usage:
   \cs_gset_protected:Npn \fastrecompilesetimplicitpreamble {
     \msg_error:nn { fastrecompile } { duplicate-set-implicit-preamble }
