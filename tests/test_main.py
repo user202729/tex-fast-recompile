@@ -239,6 +239,7 @@ skipif_windows=pytest.mark.skipif('os.name=="nt"')
 
 # note that `"` in file name is not supported
 @pytest.mark.parametrize("filename,valid", [
+	("a.b", True),
 	("{~", True),
 	("}%", True),
 	pytest.param("%|", True, marks=skipif_windows),

@@ -489,14 +489,14 @@ class CompilationDaemon:
 
 				self.finish_callback(return_0=return_0)
 
-				log_text: bytes=(daemon.output_directory/args.jobname).with_suffix(".log").read_bytes()
+				log_text: bytes=(daemon.output_directory/(args.jobname+".log")).read_bytes()
 
 				if b"Rerun to get" in log_text or b"Rerun." in log_text:
 					print("Rerunning." + "\n"*args.num_separation_lines)
 					immediately_recompile=True
 					continue
 
-				if return_0 and (daemon.output_directory/args.jobname).with_suffix(".pdf").is_file():
+				if return_0 and (daemon.output_directory/(args.jobname+".pdf")).is_file():
 					if args.success_cmd:
 						subprocess.run(args.success_cmd, shell=True, check=True)
 				else:
@@ -543,8 +543,8 @@ def main(args=None)->None:
 	if args.output_directory is None:
 		args.output_directory=Path(".")
 
-	args.generated_pdf_path=(args.output_directory/args.jobname).with_suffix(".pdf")
-	args.generated_log_path=(args.output_directory/args.jobname).with_suffix(".log")
+	args.generated_pdf_path=args.output_directory/(args.jobname+".pdf")
+	args.generated_log_path=args.output_directory/(args.jobname+".log")
 
 	if args.copy_output==args.generated_pdf_path:
 		raise RuntimeError("The output file to copy to must not be the same as the generated output file!")
