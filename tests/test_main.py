@@ -26,7 +26,7 @@ class Process:
 
 	def kill(self)->None:
 		process=self.process
-		if os.name=="nt":
+		if sys.platform=="win32":
 			try:
 				processes = [process] + process.children(recursive=True)
 			except psutil.NoSuchProcess:
@@ -41,7 +41,7 @@ class Process:
 			except psutil.NoSuchProcess: pass
 
 	def keyboard_interrupt(self)->None:
-		if os.name=="nt":
+		if sys.platform=="win32":
 			self.process.send_signal(signal.CTRL_C_EVENT)
 		else:
 			# TODO: this seems to be not identical to pressing ^C on terminal, it only send to top process?
@@ -142,9 +142,10 @@ def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", e
 		tmp_file.write_bytes(content)  # dedent not supported
 	output_dir=tmp_path/"output"
 	output_dir.mkdir()
-	extra={}
-	if os.name=="nt":
-		extra=dict(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)  # on Windows this is necessary to make ctrl-C not kill the self process?
+	extra: dict={}
+	if sys.platform=="win32":
+		extra=dict(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+		# on Windows this is necessary to make ctrl-C not kill the self process?
 	process=Process([
 		"tex_fast_recompile",
 		"--success-cmd=echo ========success",
@@ -236,7 +237,7 @@ def test_weird_file_content(tmp_path: Path)->None:
 		ensure_print_lines(process, [expect_success])
 		ensure_pdf_content(tmp_path, "helloworld")
 
-skipif_windows=pytest.mark.skipif('os.name=="nt"')
+skipif_windows=pytest.mark.skipif('sys.platform=="win32"')
 
 # note that `"` in file name is not supported
 @pytest.mark.parametrize("filename,valid", [

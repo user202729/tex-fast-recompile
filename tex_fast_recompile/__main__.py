@@ -607,7 +607,7 @@ def main(args=None)->None:
 
 		while True:
 			try:
-				if os.name=="nt":
+				if sys.platform=="win32":
 					# https://github.com/user202729/tex-fast-recompile/issues/15
 					while True:
 						try:
