@@ -20,25 +20,6 @@ Refer to https://tex.stackexchange.com/q/1137/250119 for installation instructio
 
 (currently the TeX package is not available on CTAN)
 
-### Manual installation from source (GitHub)
-
-In case I fix some bug in the latest version but forget to push to PyPI.
-
-Run from the command-line:
-
-```bash
-pip install git+https://github.com/user202729/tex-fast-recompile
-```
-
-or alternatively download the code from GitHub by clicking "Code ⯆" green button → "Download ZIP" (at the moment),
-then unzip the file and from within the folder,
-
-```bash
-pip install -e .
-```
-
-The `-e` is an "editable" install, that is if you modify the source code in the folder, you don't need to reinstall the package.
-
 ## Usage
 
 ### Normal mode
@@ -70,6 +51,8 @@ For VimTeX usage, putting the following configuration in `.vimrc` usually suffic
 let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 ```
 
+## Common issues
+
 ### Note for Windows users
 
 For yet-unknown reasons, file names containing non-ASCII characters are not supported. For example the following is invalid:
@@ -90,7 +73,26 @@ If update performance appears slow, try disabling `writebackup`, or set `backupc
 (this issue happened once for me, and I haven't been able to reproduce it so far. Alternatively just try
 restarting your computer.)
 
-## Limitations
+### Note on output directory
+
+Usually, features that requires shell-escape may fail when the output directory is not the current directory.
+
+A command `\fastrecompileoutputdir` is provided, that fully expands to the real output directory (which is the temporary output directory in case `--temp-output-dir` is provided, the output files will be copied back to the written output directory when the compilation finishes).
+
+Depends on the package, different ways are needed to make it aware of the output directory. For example, for the `rubikrotation` package:
+
+```
+\usepackage{rubikcube,rubikrotation,rubikpatterns}
+\renewcommand{\rubikperlcmd}{\rubikperlname\space -i \fastrecompileoutputdir/rubikstate.dat -o \fastrecompileoutputdir/rubikstateNEW.dat}
+```
+
+For `tikzexternalize`, [there appears to be no good way](https://tex.stackexchange.com/questions/243935/).
+
+### Output PDF is different from manual compilation
+
+Report a bug on [GitHub](https://github.com/user202729/tex-fast-recompile), but for a workaround try to explicitly put `\fastrecompileendpreamble` (see below) at an appropriate place (usually before/after `\begin{document}`. At the very beginning also work, but diminishes the speed-up advantage)
+
+### Limitations
 
 * While it's not necessary for the content to be well-formed UTF-8, the file encoding must be compatible with ASCII.
 (for example, UTF-16 is not compatible)
@@ -117,6 +119,25 @@ such as:
 While the first filter may be overly broad, for the purpose of fast preview it isn't too important.)
 
 ## Advanced notes
+
+### Manual installation from source (GitHub)
+
+In case I fix some bug in the latest version but forget to push to PyPI.
+
+Run from the command-line:
+
+```bash
+pip install git+https://github.com/user202729/tex-fast-recompile
+```
+
+or alternatively download the code from GitHub by clicking "Code ⯆" green button → "Download ZIP" (at the moment),
+then unzip the file and from within the folder,
+
+```bash
+pip install -e .
+```
+
+The `-e` is an "editable" install, that is if you modify the source code in the folder, you don't need to reinstall the package.
 
 ### Explicitly specify preamble ending location
 

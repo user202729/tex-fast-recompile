@@ -176,7 +176,7 @@ class CompilationDaemonLowLevel:
 			compiling_filename=self.filename
 
 		else:
-			compiling_filename=r"\RequirePackage{fastrecompile}\fastrecompilecheckversion{0.5.0}"
+			compiling_filename=r"\RequirePackage{fastrecompile}\edef\fastrecompileoutputdir{" + escape_filename_for_input(str(self.output_directory)) + r"}\fastrecompilecheckversion{0.5.0}"
 			if preamble.implicit:
 				if self.pause_at_begindocument_end:
 					compiling_filename+=r"\fastrecompilesetimplicitpreambleii"
