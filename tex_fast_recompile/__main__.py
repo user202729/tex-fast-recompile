@@ -117,10 +117,10 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--failure-cmd", help="Command to run after compilation fails.")
 	parser.add_argument("--polling-duration", type=float, default=0,
 					 help="Normally, a smart observer is used; however, on some remote file systems, it does not work. "
-					 "A manual polling observer can be used instead by passing a positive value to this argument. "
+					 "A manual polling observer can be used instead by passing a positive value (number of seconds) to this argument. "
 					 "Note that if the value is too small, a lot of resources will be used to check for file change; "
-					 "while if the file is too large, the speed-up by this program may be diminished by the waiting time "
-					 "before the file change is detected -- in the latter case, this program may provide no benefit over latexmk.")
+					 "while if the value is too large, the speed-up by this program may be diminished by the waiting time "
+					 "before the file change is detected, in this case, this program may provide no benefit over latexmk.")
 	parser.add_argument("filename", help="The filename to compile")
 	return parser
 
