@@ -179,7 +179,8 @@ def test_tex_error(tmp_path: Path)->None:
 	with process:
 		ensure_print_lines(process, [expect_failure])
 
-def test_recompile(tmp_path: Path)->None:
+@pytest.mark.parametrize("extra_args", [[], ["--polling-duration=0.5"]])
+def test_recompile(tmp_path: Path, extra_args: list[str])->None:
 	# in newer versions of LaTeX rerunfilecheck is not necessary
 	tmp_file, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
@@ -187,7 +188,7 @@ def test_recompile(tmp_path: Path)->None:
 	\begin{document}
 	\label{abc}page[\pageref{abc}]
 	\end{document}
-	""")
+	""", extra_args=extra_args)
 	with process:
 		ensure_print_lines(process, [expect_rerunning, expect_success])
 		ensure_pdf_content(tmp_path, "page[1]")

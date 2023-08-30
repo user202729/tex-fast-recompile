@@ -115,6 +115,12 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation.")
 	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")
 	parser.add_argument("--failure-cmd", help="Command to run after compilation fails.")
+	parser.add_argument("--polling-duration", type=float, default=0,
+					 help="Normally, a smart observer is used; however, on some remote file systems, it does not work. "
+					 "A manual polling observer can be used instead by passing a positive value to this argument. "
+					 "Note that if the value is too small, a lot of resources will be used to check for file change; "
+					 "while if the file is too large, the speed-up by this program may be diminished by the waiting time "
+					 "before the file change is detected -- in the latter case, this program may provide no benefit over latexmk.")
 	parser.add_argument("filename", help="The filename to compile")
 	return parser
 
@@ -491,7 +497,7 @@ class CompilationDaemon:
 
 				log_text: bytes=(daemon.output_directory/(args.jobname+".log")).read_bytes()
 
-				if b"Rerun to get" in log_text or b"Rerun." in log_text:
+				if any(text in log_text for text in (b"Rerun to get", b"Rerun.", b"Please rerun")):
 					print("Rerunning." + "\n"*args.num_separation_lines)
 					immediately_recompile=True
 					continue
@@ -555,6 +561,7 @@ def main(args=None)->None:
 	import watchdog  # type: ignore
 	import watchdog.events  # type: ignore
 	import watchdog.observers  # type: ignore
+	import watchdog.observers.polling  # type: ignore
 
 	# create a queue to wake up the main thread whenever something changed
 	q: queue.Queue[bool]=queue.Queue()
@@ -582,7 +589,10 @@ def main(args=None)->None:
 			self.check_watching_path(event.dest_path)
 
 
-	observer = watchdog.observers.Observer()
+	if args.polling_duration>0:
+		observer = watchdog.observers.polling.PollingObserver(timeout=args.polling_duration)
+	else:
+		observer = watchdog.observers.Observer()
 	for path, preamble in [
 			*[(x, False) for x in args.extra_watch+[Path(args.filename)]],
 			*[(x, True) for x in args.extra_watch_preamble],
