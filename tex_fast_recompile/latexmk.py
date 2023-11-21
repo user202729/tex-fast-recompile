@@ -26,6 +26,8 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("-outdir", "-output-directory", help="Set the output directory")
 	parser.add_argument("-auxdir", "-aux-directory", help="Set the auxiliary directory. Currently must be empty or equal to output directory")
 	parser.add_argument("-pvc", required=True, action="store_true", help="Same as -pvc flag in latexmk")
+	parser.add_argument("-pvctimeout", action="store_true", help="For latexmk: timeout in pvc mode after period of inactivity. For this program, do nothing.")
+	parser.add_argument("-pvctimeout-", action="store_true", help="For latexmk: don't timeout in pvc mode after inactivity. For this program, do nothing.")
 	parser.add_argument("-view", help="Set the viewer (unsupported, will be silently ignored)")
 	parser.add_argument("-emulate-aux-dir", action="store_true", help="(silently ignored)")
 	parser.add_argument("-e", action="append", default=[], help="Compatibility layer for latexmk -e option (initialization code)")
