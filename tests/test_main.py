@@ -12,11 +12,16 @@ import time
 import signal
 import shutil
 import psutil  # type: ignore
+from dataclasses import dataclass
 
 LinePredicate=Callable[[str], bool]
 line_predicates: list[LinePredicate]=[]
 
+@dataclass
 class Process:
+	args: tuple[str]
+	kwargs: dict[str, str]
+
 	def __init__(self, *args, **kwargs)->None:
 		self.args=args
 		self.kwargs=kwargs
@@ -60,7 +65,7 @@ class Process:
 
 def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_stdout: bool=True)->None:
 	killed=False
-	def kill_process():
+	def kill_process()->None:
 		nonlocal killed
 		killed=True
 		process.kill()
@@ -73,23 +78,27 @@ def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_st
 	else:
 		assert process.process.stderr is not None
 		stream=process.process.stderr
-	collected_lines=[]
+	collected_lines: list[str]=[]
+
+	def get_error_context()->str:
+		return f"seen lines are {collected_lines}, stderr is '''{process.process.stderr.read()}'''"
+
 	for line in stream:
 		collected_lines.append(line)
 		waiting_for=expects[-1]
 
 		assert waiting_for in line_predicates
 		for remaining in line_predicates:
-			if remaining!=waiting_for: assert not remaining(line), f"Unexpected line {line} -- seen lines are {collected_lines}, stderr is {process.process.stderr.read()}"
+			if remaining!=waiting_for: assert not remaining(line), f"Unexpected line {line} -- {get_error_context()}"
 
 		if waiting_for(line):
 			expects.pop()
 			if not expects: break
 	else:
 		if killed:
-			assert False, f"Timeout without seeing some lines -- seen lines are {collected_lines}"
+			assert False, f"Timeout without seeing some lines -- {get_error_context()}"
 		else:
-			assert False, f"Process exit voluntarily but some expected lines are never seen?? -- seen lines are {collected_lines}, stderr is {process.process.stderr.read()}"
+			assert False, f"Process exit voluntarily but some expected lines are never seen?? -- {get_error_context()}"
 
 	if killed:
 		print("Warning: all expected lines are seen but process is killed anyway", file=sys.stderr)
@@ -126,9 +135,16 @@ def expect_no_preamble(line: str)->bool:
 	return r"File contains neither \fastrecompileendpreamble nor \begin{document} line" in line
 
 @possible_line_content
+def expect_tex_error_message(line: str)->bool:
+	return r"! ======== TeX error message." in line
+
+@possible_line_content
 def expect_keyboard_interrupt(line: str)->bool:
 	return "KeyboardInterrupt" in line
 
+@possible_line_content
+def expect_cannot_find_format(line: str)->bool:
+	return "I can't find the format" in line
 
 def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 	txt_file=file.with_suffix(".txt")
@@ -387,8 +403,6 @@ def test_preamble_changed_between_runs(tmp_path: Path, precompile_preamble: bool
 	with process:
 		ensure_print_lines(process, [expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld1,a", output_dir_name=output_dir_name)
-		if precompile_preamble:
-			assert (tmp_path/output_dir_name/"a.fmt").is_file()
 
 	file, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
@@ -401,8 +415,6 @@ def test_preamble_changed_between_runs(tmp_path: Path, precompile_preamble: bool
 	with process:
 		ensure_print_lines(process, [expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld2,a", output_dir_name=output_dir_name)
-		if precompile_preamble:
-			assert (tmp_path/output_dir_name/"a.fmt").is_file()
 
 @pytest.mark.parametrize("precompile_preamble", [True, False])
 def test_no_preamble(tmp_path: Path, precompile_preamble: bool)->None:
@@ -430,31 +442,31 @@ def test_no_preamble(tmp_path: Path, precompile_preamble: bool)->None:
 def test_error_in_preamble(tmp_path: Path, precompile_preamble: bool)->None:
 	file, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
-	\error
+	\errmessage{======== TeX error message}
 	\begin{document}
 	Helloworld1
 	\end{document}
 	""", precompile_preamble=precompile_preamble)
 	with process:
-		ensure_print_lines(process, [expect_no_preamble])
+		ensure_print_lines(process, [expect_tex_error_message, expect_failure])
 
 		file.write_text(textwrap.dedent(r"""
 		\documentclass{article}
-		\begin{document}
-		Helloworld1
-		\end{document}
-		"""))
-		ensure_print_lines(process, [expect_success])
-		ensure_pdf_content(tmp_path, "Helloworld1")
-
-		file.write_text(textwrap.dedent(r"""
-		\documentclass{article}
-		\error
 		\begin{document}
 		Helloworld2
 		\end{document}
 		"""))
-		ensure_print_lines(process, [expect_no_preamble])
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld2")
+
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\errmessage{======== TeX error message}
+		\begin{document}
+		Helloworld3
+		\end{document}
+		"""))
+		ensure_print_lines(process, [expect_preamble_changed, expect_tex_error_message, expect_failure])
 
 def count_pdflatex_child_processes(process: Process)->int:
 	return len([

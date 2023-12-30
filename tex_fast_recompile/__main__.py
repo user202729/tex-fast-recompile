@@ -4,6 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 from dataclasses import dataclass
+import dataclasses
 import types
 from typing import Iterator, Optional, List, Callable, Union, Type, Generator
 import subprocess
@@ -163,7 +164,7 @@ class CompilationDaemonLowLevel:
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
 	mylatexformat_status: MyLatexFormatStatus
-	env: Optional[dict[str, str]]=None
+	env: dict[str, str]=dataclasses.field(default_factory=lambda: dict(os.environ))
 	pause_at_begindocument_end: bool=False  # by default it pauses at begindocument/before which is safer
 	# pausing at begindocument/end is faster but breaks hyperref
 	"""
@@ -219,7 +220,7 @@ class CompilationDaemonLowLevel:
 		self._copy_stdout_thread: Optional[threading.Thread]=None
 		self._finished=False
 
-	def finish(self)->bool:
+	def finish(self, *, quiet: bool)->bool:
 		"""
 		Returns whether the compiler returns 0.
 		Note that it's possible for the compiler to return 0 and yet the compilation failed, if no PDF is generated.
@@ -232,15 +233,19 @@ class CompilationDaemonLowLevel:
 		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_bytes()):
 			raise PreambleChangedError()
 
+		assert process.stdin is not None
+		assert process.stdout is not None
+
 		if self.mylatexformat_status is MyLatexFormatStatus.precompile:
 			# don't need to send extra line, finish is finish
+			process.stdin.close()
+			if not quiet:
+				self._enable_copy_stdout_thread()
 			process.wait()
 			return process.returncode==0
 
 		# send one line to the process to wake it up
 		# (before this step, process stdout must be suppressed)
-		assert process.stdin is not None
-		assert process.stdout is not None
 		try:
 			process.stdin.write(self.filename.encode('u8') + b"\n")
 			process.stdin.flush()
@@ -251,7 +256,8 @@ class CompilationDaemonLowLevel:
 			pass
 
 		self.compiling_callback()
-		self._enable_copy_stdout_thread()
+		if not quiet:
+			self._enable_copy_stdout_thread()
 
 		# wait for the process to finish
 		process.wait()
@@ -299,6 +305,13 @@ def cleanup_atexit()->None:
 			shutil.rmtree(path)  # oddly cleanup() alone does not always remove the directory?
 
 
+def _create_temp_dir()->tempfile.TemporaryDirectory:
+	try:
+		return tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-", ignore_cleanup_errors=False)  # we manually delete it in __exit__ after killing the latex subprocess
+	except TypeError:  # older Python versions does not accept the ignore_cleanup_errors parameter...
+		return tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
+
+
 @dataclass
 class CompilationDaemonLowLevelTempOutputDir:
 	filename: str
@@ -313,19 +326,15 @@ class CompilationDaemonLowLevelTempOutputDir:
 	close_stdin: bool
 	compiling_callback: Callable[[], None]
 	mylatexformat_status: MyLatexFormatStatus
+	env: dict[str, str]=dataclasses.field(default_factory=lambda: dict(os.environ))
 
 	def __enter__(self)->None:
-		try:
-			self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-", ignore_cleanup_errors=False)  # we manually delete it in __exit__ after killing the latex subprocess
-		except TypeError:  # older Python versions does not accept the ignore_cleanup_errors parameter...
-			self._temp_output_dir=tempfile.TemporaryDirectory(dir=tmpdir, prefix=str(os.getpid())+"-")
+		self._temp_output_dir=_create_temp_dir()
 		self._temp_output_dir_path=Path(self._temp_output_dir.name)
 		self._temp_output_dir.__enter__()
 
-		env=None
-
+		env=self.env
 		# https://stackoverflow.com/questions/19023238/why-python-uppercases-all-environment-variables-in-windows
-
 		if os.pathsep in str(self.output_directory):
 			print(f"Warning: Output directory {self.output_directory} contains invalid character {os.pathsep}")
 
@@ -341,7 +350,6 @@ class CompilationDaemonLowLevelTempOutputDir:
 					pass
 
 		else:
-			env=dict(os.environ)
 			env["TEXINPUTS"]=str(self.output_directory) + os.pathsep + env.get("TEXINPUTS", "")
 			# https://tex.stackexchange.com/a/93733/250119 -- if it's originally empty append a trailing : or ;
 
@@ -363,8 +371,8 @@ class CompilationDaemonLowLevelTempOutputDir:
 			)
 		self._daemon.__enter__()
 
-	def finish(self)->bool:
-		result=self._daemon.finish()
+	def finish(self, *, quiet: bool)->bool:
+		result=self._daemon.finish(quiet=quiet)
 		# copy back all the generated files in the target folder to the original output directory
 		for file in self._temp_output_dir_path.iterdir():
 			if file.is_file():
@@ -409,13 +417,17 @@ class CompilationDaemon:
 	"""
 	args: types.SimpleNamespace
 	_daemon: Union[CompilationDaemonLowLevel, CompilationDaemonLowLevelTempOutputDir, None]=None
+	_temp_fmt_dir: Optional[tempfile.TemporaryDirectory]=None
+	_temp_fmt_dir_path: Optional[Path]=None
 
 	def __enter__(self)->None:
 		"""
 		Start the compiler. See class documentation for detail.
 		"""
 		if self.args.precompile_preamble:
-			self._unlink_fmt()  # we don't know if the format file (possibly from previous run) is outdated
+			self._temp_fmt_dir=_create_temp_dir()
+			self._temp_fmt_dir_path=Path(self._temp_fmt_dir.name)
+			self._temp_fmt_dir.__enter__()
 		self._start_daemon(quiet=True)
 
 	def _print_no_preamble_error(self, e: NoPreambleError)->None:
@@ -427,6 +439,8 @@ class CompilationDaemon:
 		Start the daemon, print out the errors if preamble raise error.
 
 		Return whether it's successful.
+
+		May raise NoPreambleError if not quiet.
 		"""
 		args=self.args
 		assert self._daemon is None
@@ -440,19 +454,24 @@ class CompilationDaemon:
 			return True
 		except NoPreambleError as e:
 			self._daemon=None
-			if not quiet: self._print_no_preamble_error(e)
+			if not quiet: raise
 			return False
 
 	def _precompile_preamble(self, *, quiet: bool)->bool:
+		"""
+		Precompile the preamble.
+
+		May raise NoPreambleError if not quiet.
+		"""
 		args=self.args
 		assert args.precompile_preamble
 		precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
 
 		try:
 			with precompile_daemon:
-				return_0=precompile_daemon.finish()
+				return_0=precompile_daemon.finish(quiet=quiet)
 		except NoPreambleError as e:
-			if not quiet: self._print_no_preamble_error(e)
+			if not quiet: raise
 			return False
 
 		return return_0
@@ -463,6 +482,9 @@ class CompilationDaemon:
 		"""
 		if self._daemon is not None:
 			self._stop_daemon(exc_type, exc_value, tb)
+		if self._temp_fmt_dir is not None:
+			self._temp_fmt_dir.__exit__(exc_type, exc_value, tb)
+		# TODO doesn't look safe, use ExitStack?
 
 	def _stop_daemon(self, exc_type=None, exc_value=None, tb=None)->None:
 		assert self._daemon is not None
@@ -493,11 +515,20 @@ class CompilationDaemon:
 			cls=CompilationDaemonLowLevelTempOutputDir
 		else:
 			cls=CompilationDaemonLowLevel
+		env=dict(os.environ)
+		daemon_output_dir: Path
+		if mylatexformat_status==MyLatexFormatStatus.precompile:
+			assert self._temp_fmt_dir_path is not None
+			daemon_output_dir=self._temp_fmt_dir_path
+		else:
+			if self._temp_fmt_dir_path is not None:
+				env["TEXFORMATS"]=str(self._temp_fmt_dir_path) + os.pathsep + env.get("TEXFORMATS", "")
+			daemon_output_dir=args.output_directory
 		daemon=cls(
 				filename=args.filename,
 				executable=args.executable,
 				jobname=args.jobname,
-				output_directory=args.output_directory,
+				output_directory=daemon_output_dir,
 				shell_escape=args.shell_escape,
 				_8bit=getattr(args, "8bit"),
 				recorder=args.recorder,
@@ -506,13 +537,15 @@ class CompilationDaemon:
 				close_stdin=args.close_stdin,
 				compiling_callback=self.compiling_callback,
 				mylatexformat_status=mylatexformat_status,
+				env=env,
 				)
 		return daemon
 
 	def _path_to_fmt(self)->Path:
 		args=self.args
 		assert args.precompile_preamble
-		return args.output_directory/(args.jobname+".fmt")
+		assert self._temp_fmt_dir_path is not None
+		return self._temp_fmt_dir_path/(args.jobname+".fmt")
 
 	def _unlink_fmt(self)->None:
 		self._path_to_fmt().unlink(missing_ok=True)
@@ -529,12 +562,13 @@ class CompilationDaemon:
 
 			try:
 				with precompile_daemon:
-					return_0=precompile_daemon.finish()
+					return_0=precompile_daemon.finish(quiet=False)
 			except NoPreambleError as e:
 				self._print_no_preamble_error(e)
 				return
 
 			if not return_0:
+				self._on_failure()
 				return
 
 			assert self._path_to_fmt().is_file()
@@ -545,11 +579,18 @@ class CompilationDaemon:
 		args=self.args
 
 		if self._daemon is None:
-			self._start_daemon(quiet=False)
-			if self._daemon is None: return
+			try:
+				if not self._start_daemon(quiet=False):
+					self._on_failure()
+					return
+			except NoPreambleError as e:
+				assert self._daemon is None
+				self._print_no_preamble_error(e)
+				return
 
+		assert self._daemon is not None
 		try:
-			return_0=self._daemon.finish()
+			return_0=self._daemon.finish(quiet=False)
 		except NoPreambleError as e:
 			self._stop_daemon()
 			self._print_no_preamble_error(e)
@@ -584,12 +625,15 @@ class CompilationDaemon:
 				if args.success_cmd:
 					subprocess.run(args.success_cmd, shell=True, check=True)
 			else:
-				if args.failure_cmd:
-					subprocess.run(args.failure_cmd, shell=True, check=True)
+				self._on_failure()
 
 		self._stop_daemon()
 		self._start_daemon(quiet=True)
 
+	def _on_failure(self)->None:
+		args=self.args
+		if args.failure_cmd:
+			subprocess.run(args.failure_cmd, shell=True, check=True)
 
 
 
