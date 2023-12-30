@@ -10,6 +10,7 @@ import subprocess
 from typing import Callable
 import time
 import signal
+import shutil
 import psutil  # type: ignore
 
 LinePredicate=Callable[[str], bool]
@@ -79,7 +80,7 @@ def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_st
 
 		assert waiting_for in line_predicates
 		for remaining in line_predicates:
-			if remaining!=waiting_for: assert not remaining(line), f"Unexpected line {line} -- seen lines are {collected_lines}"
+			if remaining!=waiting_for: assert not remaining(line), f"Unexpected line {line} -- seen lines are {collected_lines}, stderr is {process.process.stderr.read()}"
 
 		if waiting_for(line):
 			expects.pop()
@@ -139,19 +140,27 @@ def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 	else:
 		assert content in txt_file.read_text(encoding='u8')
 
-def ensure_pdf_content(folder: Path, content: str, strict: bool=False)->None:
-	ensure_pdf_content_file(folder/"output"/"a.txt", content, strict=strict)
+def ensure_pdf_content(folder: Path, content: str, strict: bool=False,
+					   output_dir_name: str="output",
+					   )->None:
+	ensure_pdf_content_file(folder/output_dir_name/"a.txt", content, strict=strict)
 
-def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[], temp_output_dir: bool=True,
-					precompile_preamble: bool=False
+def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[],
+					temp_output_dir: bool=True, output_dir_name: str="output",
+					precompile_preamble: bool=False,
 					)->tuple[Path, Process]:
 	tmp_file=tmp_path/filename
 	if isinstance(content, str):
 		tmp_file.write_text(textwrap.dedent(content))
 	else:
 		tmp_file.write_bytes(content)  # dedent not supported
-	output_dir=tmp_path/"output"
-	output_dir.mkdir()
+	output_dir=tmp_path/output_dir_name
+	if output_dir_name:
+		try:
+			shutil.rmtree(output_dir)
+		except FileNotFoundError:
+			pass
+	output_dir.mkdir(exist_ok=True)
 	extra: dict={}
 	if sys.platform=="win32":
 		extra=dict(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
@@ -338,7 +347,8 @@ def test_extra_watch_preamble_changed(tmp_path: Path, precompile_preamble: bool)
 
 @pytest.mark.parametrize("precompile_preamble", [True, False])
 @pytest.mark.parametrize("use_explicit_endofdump", [True, False])
-def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explicit_endofdump: bool)->None:
+@pytest.mark.parametrize("output_dir_name", ["", "output"])
+def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explicit_endofdump: bool, output_dir_name: str)->None:
 	file, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
 	\newcommand\mycontent{Helloworld1}
@@ -346,10 +356,10 @@ def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explici
 	\begin{document}
 	\mycontent
 	\end{document}
-	""", precompile_preamble=precompile_preamble)
+	""", precompile_preamble=precompile_preamble, output_dir_name=output_dir_name)
 	with process:
 		ensure_print_lines(process, [expect_success])
-		ensure_pdf_content(tmp_path, "Helloworld1")
+		ensure_pdf_content(tmp_path, "Helloworld1", output_dir_name=output_dir_name)
 
 		file.write_text(textwrap.dedent(r"""
 		\documentclass{article}
@@ -360,7 +370,39 @@ def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explici
 		\end{document}
 		"""))
 		ensure_print_lines(process, [expect_preamble_changed, expect_success])
-		ensure_pdf_content(tmp_path, "Helloworld2")
+		ensure_pdf_content(tmp_path, "Helloworld2", output_dir_name=output_dir_name)
+
+@pytest.mark.parametrize("precompile_preamble", [True, False])
+@pytest.mark.parametrize("use_explicit_endofdump", [True, False])
+@pytest.mark.parametrize("output_dir_name", ["", "output"])
+def test_preamble_changed_between_runs(tmp_path: Path, precompile_preamble: bool, use_explicit_endofdump: bool, output_dir_name: str)->None:
+	file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\newcommand\mycontent{Helloworld1}
+	""" + (r"\csname endofdump\endcsname" if use_explicit_endofdump else "") + r"""
+	\begin{document}
+	\mycontent,\jobname
+	\end{document}
+	""", precompile_preamble=precompile_preamble, output_dir_name=output_dir_name)
+	with process:
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld1,a", output_dir_name=output_dir_name)
+		if precompile_preamble:
+			assert (tmp_path/output_dir_name/"a.fmt").is_file()
+
+	file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\newcommand\mycontent{Helloworld2}
+	""" + (r"\csname endofdump\endcsname" if use_explicit_endofdump else "") + r"""
+	\begin{document}
+	\mycontent,\jobname
+	\end{document}
+	""", precompile_preamble=precompile_preamble, output_dir_name=output_dir_name)
+	with process:
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld2,a", output_dir_name=output_dir_name)
+		if precompile_preamble:
+			assert (tmp_path/output_dir_name/"a.fmt").is_file()
 
 @pytest.mark.parametrize("precompile_preamble", [True, False])
 def test_no_preamble(tmp_path: Path, precompile_preamble: bool)->None:
@@ -381,6 +423,36 @@ def test_no_preamble(tmp_path: Path, precompile_preamble: bool)->None:
 
 		file.write_text(textwrap.dedent(r"""
 		\documentclass{article}
+		"""))
+		ensure_print_lines(process, [expect_no_preamble])
+
+@pytest.mark.parametrize("precompile_preamble", [True, False])
+def test_error_in_preamble(tmp_path: Path, precompile_preamble: bool)->None:
+	file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\error
+	\begin{document}
+	Helloworld1
+	\end{document}
+	""", precompile_preamble=precompile_preamble)
+	with process:
+		ensure_print_lines(process, [expect_no_preamble])
+
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\begin{document}
+		Helloworld1
+		\end{document}
+		"""))
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld1")
+
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\error
+		\begin{document}
+		Helloworld2
+		\end{document}
 		"""))
 		ensure_print_lines(process, [expect_no_preamble])
 

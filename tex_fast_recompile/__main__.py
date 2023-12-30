@@ -414,6 +414,8 @@ class CompilationDaemon:
 		"""
 		Start the compiler. See class documentation for detail.
 		"""
+		if self.args.precompile_preamble:
+			self._unlink_fmt()  # we don't know if the format file (possibly from previous run) is outdated
 		self._start_daemon(quiet=True)
 
 	def _print_no_preamble_error(self, e: NoPreambleError)->None:
@@ -431,6 +433,7 @@ class CompilationDaemon:
 		if args.precompile_preamble and not self._path_to_fmt().is_file():
 			if not self._precompile_preamble(quiet=quiet):
 				return False
+			assert self._path_to_fmt().is_file()
 		self._daemon=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
 		try:
 			self._daemon.__enter__()
@@ -533,6 +536,8 @@ class CompilationDaemon:
 
 			if not return_0:
 				return
+
+			assert self._path_to_fmt().is_file()
 
 		self._recompile_preamble_not_changed()
 
