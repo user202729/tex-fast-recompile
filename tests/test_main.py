@@ -117,6 +117,10 @@ def expect_preamble_changed(line: str)->bool:
 	return "Preamble changed" in line
 
 @possible_line_content
+def expect_preamble_watch_changed(line: str)->bool:
+	return "Some preamble-watch file changed" in line
+
+@possible_line_content
 def expect_keyboard_interrupt(line: str)->bool:
 	return "KeyboardInterrupt" in line
 
@@ -301,6 +305,28 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 		time.sleep(1)
 		assert count_pdflatex_child_processes(process)==1, process.process.children(recursive=True)
 		# if this is 2 then there's the resource leak
+
+def test_extra_watch_preamble_changed(tmp_path: Path)->None:
+	extra_watch_preamble_file=tmp_path/"extra-watch-preamble-file.tex"
+	file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\input{extra-watch-preamble-file.tex}
+	\begin{document}
+	\mycontent
+	\end{document}
+	""", extra_args=["--extra-watch-preamble", str(extra_watch_preamble_file)])
+	extra_watch_preamble_file.write_text(r"""
+	\newcommand\mycontent{Helloworld1}
+	""")
+	with process:
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld1")
+
+		extra_watch_preamble_file.write_text(r"""
+		\newcommand\mycontent{Helloworld2}
+		""")
+		ensure_print_lines(process, [expect_preamble_watch_changed, expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld2")
 
 def count_pdflatex_child_processes(process: Process)->int:
 	return len([

@@ -51,6 +51,39 @@ For VimTeX usage, putting the following configuration in `.vimrc` usually suffic
 let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 ```
 
+### Python API
+
+TODO
+
+### Daemon mode
+
+TODO
+
+### Precompiled preamble
+
+This package is integrated with `mylatexformat` in order to allow precompiling the preamble in order to further speed up the compilation.
+
+In order to use this feature, you need `--precompile-preamble` flag.
+
+**Note**: This is likely to only work on `latex` and `pdflatex` engine. Other engines have difficulty dumping OTF fonts and Lua states etc., use at your own risk.
+
+If there is some part of the preamble that can be precompiled and later parts that cannot be precompiled, use the `endofdump` command as instructed in the `mylatexformat` manual:
+
+```tex
+\documentclass{article}
+\usepackage{amsmath}          % ======== this package can be precompiled ========
+\csname endofdump\endcsname   % ======== endofdump command here (there must be no space before the second `\`)
+\directlua{abc="Lua string content"}  % ======== this line cannot be precompiled ========
+\begin{document}
+\directlua{tex.print(tostring(abc))}
+hello world $a+b=c$
+\end{document}
+```
+
+In the example above, if the `endofdump` command is not used, the assignment to Lua variable `abc` will not be preserved, thus the code will incorrectly print out `nil` instead of `Lua string content`.
+
+`\fastrecompileendpreamble` can also similarly be used, but it must be placed **after** `endofdump` command.
+
 ## Common issues
 
 ### Note for Windows users

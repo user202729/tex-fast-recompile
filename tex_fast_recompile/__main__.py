@@ -109,8 +109,6 @@ def get_parser()->argparse.ArgumentParser:
 	parser.add_argument("--copy-log", type=Path,
 					 help="After compilation finishes, copy the log file to the given path. "
 					 "If you want to read the log file, you must use this option and read it at the target path.")
-	parser.add_argument("--abort-on-preamble-change", action="store_true", help="Abort compilation if the preamble changed.")
-	parser.add_argument("--continue-on-preamble-change", action="store_false", dest="abort_on_preamble_change", help="Continue compilation if the preamble changed. Reverse of --abort-on-preamble-change.")
 	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
 	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation.")
 	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")
@@ -121,6 +119,7 @@ def get_parser()->argparse.ArgumentParser:
 					 "Note that if the value is too small, a lot of resources will be used to check for file change; "
 					 "while if the value is too large, the speed-up by this program may be diminished by the waiting time "
 					 "before the file change is detected, in this case, this program may provide no benefit over latexmk.")
+	parser.add_argument("--precompile-preamble", action="store_true", help="Use mylatexformat package to precompile the preamble. Read README 'Precompiled preamble' section for details.")
 	parser.add_argument("filename", help="The filename to compile")
 	return parser
 
@@ -405,33 +404,162 @@ class CompilationDaemon:
 	TODO: rewrite to avoid coroutine some time to make finalization easier?
 	"""
 	args: types.SimpleNamespace
+	_daemon: Union[CompilationDaemonLowLevel, CompilationDaemonLowLevelTempOutputDir, None]=None
 
 	def __enter__(self)->None:
-		self._recompile_iter = self._recompile_iter_func()
-		next(self._recompile_iter)  # this makes the function run to the first time it yields
+		"""
+		Start the compiler. See class documentation for detail.
+		"""
+		self._start_daemon_quietly()
+
+	def _start_daemon(self)->None:
+		"""
+		Start the daemon, print out the errors if preamble raise error.
+		"""
+		args=self.args
+		assert self._daemon is None
+		if args.precompile_preamble and not self._path_to_fmt().is_file():
+			if not self._precompile_preamble():
+				return
+		self._daemon=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
+		try:
+			self._daemon.__enter__()
+		except NoPreambleError as e:
+			self._daemon=None
+			sys.stdout.write(f"! {e.args[0]}.\n")
+			sys.stdout.flush()
+			return
+
+	def _precompile_preamble(self)->bool:
+		args=self.args
+		assert args.precompile_preamble
+		precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
+
+		try:
+			with precompile_daemon:
+				return_0=precompile_daemon.finish()
+		except NoPreambleError as e:
+			return False
+
+		return return_0
+
+	def _start_daemon_quietly(self)->None:
+		"""
+		Start the daemon, don't complain if preamble raise error.
+		"""
+		args=self.args
+		assert self._daemon is None
+		if args.precompile_preamble and not self._path_to_fmt().is_file():
+			if not self._precompile_preamble():
+				return
+
+		self._daemon=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
+		try:
+			self._daemon.__enter__()
+		except NoPreambleError as e:
+			self._daemon=None
+			self._no_preamble_error_instance=e
 
 	def __exit__(self, exc_type, exc_value, tb)->None:
-		try:
-			self._recompile_iter.send(_DaemonStatusUpdate.exiting)
-			raise RuntimeError("this should be unreachable")
-		except StopIteration:
-			pass
+		"""
+		Clean up everything.
+		"""
+		if self._daemon is not None:
+			self._stop_daemon(exc_type, exc_value, tb)
+
+	def _stop_daemon(self, exc_type=None, exc_value=None, tb=None)->None:
+		assert self._daemon is not None
+		self._daemon.__exit__(exc_type, exc_value, tb)
+		self._daemon=None
 
 	def recompile(self, recompile_preamble: bool)->None:
+		args=self.args
 		self.start_time=time.time()
-		self._recompile_iter.send(
-				_DaemonStatusUpdate.preamble_changed if recompile_preamble else _DaemonStatusUpdate.file_changed)
+		if recompile_preamble:
+			sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
+			self._recompile_preamble_changed()
+		else:
+			self._recompile_preamble_not_changed()
 
 	def compiling_callback(self)->None:
 		args=self.args
 		if args.compiling_cmd:
 			subprocess.run(args.compiling_cmd, shell=True, check=True)
 
-	def finish_callback(self, return_0: bool)->None:
+	def _create_daemon_object(self, mylatexformat_status: MyLatexFormatStatus)->Union[CompilationDaemonLowLevel, CompilationDaemonLowLevelTempOutputDir]:
 		"""
-		This function is called when the compilation finished.
+		Create a daemon object. Does not start the compiler, caller need to manually call __enter__().
 		"""
 		args=self.args
+		cls: Union[Type[CompilationDaemonLowLevel], Type[CompilationDaemonLowLevelTempOutputDir]]
+		if args.temp_output_directory:
+			cls=CompilationDaemonLowLevelTempOutputDir
+		else:
+			cls=CompilationDaemonLowLevel
+		daemon=cls(
+				filename=args.filename,
+				executable=args.executable,
+				jobname=args.jobname,
+				output_directory=args.output_directory,
+				shell_escape=args.shell_escape,
+				_8bit=getattr(args, "8bit"),
+				recorder=args.recorder,
+				extra_args=args.extra_args,
+				extra_commands=[],
+				close_stdin=args.close_stdin,
+				compiling_callback=self.compiling_callback,
+				mylatexformat_status=mylatexformat_status,
+				)
+		return daemon
+
+	def _path_to_fmt(self)->Path:
+		args=self.args
+		assert args.precompile_preamble
+		return args.output_directory/(args.jobname+".fmt")
+
+	def _unlink_fmt(self)->None:
+		self._path_to_fmt().unlink(missing_ok=True)
+
+	def _recompile_preamble_changed(self)->None:
+		args=self.args
+
+		if args.precompile_preamble:
+			self._unlink_fmt()
+		self._stop_daemon()
+
+		if args.precompile_preamble and not self._path_to_fmt().is_file():
+			precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
+
+			try:
+				with precompile_daemon:
+					return_0=precompile_daemon.finish()
+			except NoPreambleError as e:
+				sys.stdout.write(f"! {e.args[0]}.\n")
+				sys.stdout.flush()
+				return
+
+			if not return_0:
+				return
+
+		self._start_daemon()
+
+		self._recompile_preamble_not_changed()
+
+
+	def _recompile_preamble_not_changed(self)->None:
+		args=self.args
+
+		if self._daemon is None:
+			self._start_daemon()
+			if self._daemon is None: return
+
+		try:
+			return_0=self._daemon.finish()
+		except PreambleChangedError:
+			sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
+			self._recompile_preamble_changed()
+			return
+
 		if args.show_time:
 			sys.stdout.write(f"Time taken: {time.time()-self.start_time:.3f}s\n")
 			sys.stdout.flush()
@@ -446,84 +574,24 @@ class CompilationDaemon:
 			# this must not error out
 			shutil.copyfile(args.generated_log_path, args.copy_log)
 
-	def _recompile_iter_func(self)->Generator[None, _DaemonStatusUpdate, None]:
-		args=self.args
-		immediately_recompile=False
-		while True:
-			no_preamble_error_instance=None
-			try:
-				cls: Union[Type[CompilationDaemonLowLevel], Type[CompilationDaemonLowLevelTempOutputDir]]
-				if args.temp_output_directory:
-					cls=CompilationDaemonLowLevelTempOutputDir
-				else:
-					cls=CompilationDaemonLowLevel
-				daemon=cls(
-						filename=args.filename,
-						executable=args.executable,
-						jobname=args.jobname,
-						output_directory=args.output_directory,
-						shell_escape=args.shell_escape,
-						_8bit=getattr(args, "8bit"),
-						recorder=args.recorder,
-						extra_args=args.extra_args,
-						extra_commands=[],
-						close_stdin=args.close_stdin,
-						compiling_callback=self.compiling_callback,
-						mylatexformat_status=MyLatexFormatStatus.not_use,
-						)
-			except NoPreambleError as e:
-				# we swallow the error here and raise it later after the first recompile() call
-				no_preamble_error_instance=e
+		log_text: bytes=(self._daemon.output_directory/(args.jobname+".log")).read_bytes()
+
+		if any(text in log_text for text in (b"Rerun to get", b"Rerun.", b"Please rerun")):
+			print("Rerunning." + "\n"*args.num_separation_lines)
+			self._stop_daemon()
+			self._recompile_preamble_not_changed()
+		else:
+			if return_0 and (self._daemon.output_directory/(args.jobname+".pdf")).is_file():
+				if args.success_cmd:
+					subprocess.run(args.success_cmd, shell=True, check=True)
+			else:
+				if args.failure_cmd:
+					subprocess.run(args.failure_cmd, shell=True, check=True)
+
+		self._stop_daemon()
+		self._start_daemon_quietly()
 
 
-			try:
-				with daemon:
-					if immediately_recompile: immediately_recompile=False
-					else:
-						status=yield
-						if status==_DaemonStatusUpdate.preamble_changed:
-							sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
-							immediately_recompile=True
-							continue
-
-						if status==_DaemonStatusUpdate.exiting:
-							return
-
-					if no_preamble_error_instance is not None:
-						raise no_preamble_error_instance
-					return_0=daemon.finish()
-
-				self.finish_callback(return_0=return_0)
-
-				log_text: bytes=(daemon.output_directory/(args.jobname+".log")).read_bytes()
-
-				if any(text in log_text for text in (b"Rerun to get", b"Rerun.", b"Please rerun")):
-					print("Rerunning." + "\n"*args.num_separation_lines)
-					immediately_recompile=True
-					continue
-
-				if return_0 and (daemon.output_directory/(args.jobname+".pdf")).is_file():
-					if args.success_cmd:
-						subprocess.run(args.success_cmd, shell=True, check=True)
-				else:
-					if args.failure_cmd:
-						subprocess.run(args.failure_cmd, shell=True, check=True)
-
-			except NoPreambleError as e:
-				sys.stdout.write(f"! {e.args[0]}.\n")
-				sys.stdout.flush()
-				status=yield
-				if status==_DaemonStatusUpdate.exiting:
-					return
-				immediately_recompile=True
-				continue
-
-			except PreambleChangedError:
-				if args.abort_on_preamble_change:
-					break
-				else:
-					sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
-					immediately_recompile=True
 
 
 def cleanup_previous_processes()->None:
@@ -592,7 +660,7 @@ def main(args=None)->None:
 	if args.polling_duration>0:
 		observer = watchdog.observers.polling.PollingObserver(timeout=args.polling_duration)
 	else:
-		observer = watchdog.observers.Observer()
+		observer = watchdog.observers.Observer()  # type: ignore
 	for path, preamble in [
 			*[(x, False) for x in args.extra_watch+[Path(args.filename)]],
 			*[(x, True) for x in args.extra_watch_preamble],
