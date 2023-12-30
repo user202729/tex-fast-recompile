@@ -189,11 +189,11 @@ class CompilationDaemonLowLevel:
 					compiling_filename+=r"\fastrecompilesetimplicitpreamble"
 
 			if self.mylatexformat_status is MyLatexFormatStatus.precompile:
-				compiling_filename+=r"\input{mylatexformat.ltx}{" + filename_escaped + "}"
+				compiling_filename+=r"\csname @@input\endcsname{mylatexformat.ltx}{" + filename_escaped + "}"
+				# we use \@@input so that mylatexformat.ltx can peek ahead
 			else:
 				compiling_filename+=r"\input{" + filename_escaped + "}"
-			# we use \input{...} instead of primitive \@@input so the file name change is visible to LaTeX
-
+				# we use \input{...} instead of primitive \@@input so the file name change is visible to LaTeX
 
 		# build the command
 		command=[self.executable]
@@ -251,9 +251,17 @@ class CompilationDaemonLowLevel:
 			pass
 
 		self.compiling_callback()
+		self._enable_copy_stdout_thread()
 
+		# wait for the process to finish
+		process.wait()
+
+		return process.returncode==0
+
+	def _enable_copy_stdout_thread(self)->None:
 		# start a new thread to copy process stdout to sys.stdout
 		# the copy should be done such that partially-written lines get copied immediately when they're written
+		process=self._process
 		def copy_stdout_work()->None:
 			while True:
 				assert process.stdout is not None
@@ -264,13 +272,9 @@ class CompilationDaemonLowLevel:
 					break
 				sys.stdout.buffer.write(content)
 				sys.stdout.buffer.flush()
+		assert self._copy_stdout_thread is None
 		self._copy_stdout_thread=threading.Thread(target=copy_stdout_work)
 		self._copy_stdout_thread.start()
-
-		# wait for the process to finish
-		process.wait()
-
-		return process.returncode==0
 
 	def __exit__(self, exc_type, exc_value, tb)->None:
 		self._process.kill()
@@ -410,27 +414,33 @@ class CompilationDaemon:
 		"""
 		Start the compiler. See class documentation for detail.
 		"""
-		self._start_daemon_quietly()
+		self._start_daemon(quiet=True)
 
-	def _start_daemon(self)->None:
+	def _print_no_preamble_error(self, e: NoPreambleError)->None:
+		sys.stdout.write(f"! {e.args[0]}.\n")
+		sys.stdout.flush()
+
+	def _start_daemon(self, *, quiet: bool)->bool:
 		"""
 		Start the daemon, print out the errors if preamble raise error.
+
+		Return whether it's successful.
 		"""
 		args=self.args
 		assert self._daemon is None
 		if args.precompile_preamble and not self._path_to_fmt().is_file():
-			if not self._precompile_preamble():
-				return
+			if not self._precompile_preamble(quiet=quiet):
+				return False
 		self._daemon=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
 		try:
 			self._daemon.__enter__()
+			return True
 		except NoPreambleError as e:
 			self._daemon=None
-			sys.stdout.write(f"! {e.args[0]}.\n")
-			sys.stdout.flush()
-			return
+			if not quiet: self._print_no_preamble_error(e)
+			return False
 
-	def _precompile_preamble(self)->bool:
+	def _precompile_preamble(self, *, quiet: bool)->bool:
 		args=self.args
 		assert args.precompile_preamble
 		precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
@@ -439,26 +449,10 @@ class CompilationDaemon:
 			with precompile_daemon:
 				return_0=precompile_daemon.finish()
 		except NoPreambleError as e:
+			if not quiet: self._print_no_preamble_error(e)
 			return False
 
 		return return_0
-
-	def _start_daemon_quietly(self)->None:
-		"""
-		Start the daemon, don't complain if preamble raise error.
-		"""
-		args=self.args
-		assert self._daemon is None
-		if args.precompile_preamble and not self._path_to_fmt().is_file():
-			if not self._precompile_preamble():
-				return
-
-		self._daemon=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
-		try:
-			self._daemon.__enter__()
-		except NoPreambleError as e:
-			self._daemon=None
-			self._no_preamble_error_instance=e
 
 	def __exit__(self, exc_type, exc_value, tb)->None:
 		"""
@@ -534,27 +528,27 @@ class CompilationDaemon:
 				with precompile_daemon:
 					return_0=precompile_daemon.finish()
 			except NoPreambleError as e:
-				sys.stdout.write(f"! {e.args[0]}.\n")
-				sys.stdout.flush()
+				self._print_no_preamble_error(e)
 				return
 
 			if not return_0:
 				return
 
-		self._start_daemon()
-
 		self._recompile_preamble_not_changed()
-
 
 	def _recompile_preamble_not_changed(self)->None:
 		args=self.args
 
 		if self._daemon is None:
-			self._start_daemon()
+			self._start_daemon(quiet=False)
 			if self._daemon is None: return
 
 		try:
 			return_0=self._daemon.finish()
+		except NoPreambleError as e:
+			self._stop_daemon()
+			self._print_no_preamble_error(e)
+			return
 		except PreambleChangedError:
 			sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
 			self._recompile_preamble_changed()
@@ -589,7 +583,7 @@ class CompilationDaemon:
 					subprocess.run(args.failure_cmd, shell=True, check=True)
 
 		self._stop_daemon()
-		self._start_daemon_quietly()
+		self._start_daemon(quiet=True)
 
 
 

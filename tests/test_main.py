@@ -88,7 +88,7 @@ def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_st
 		if killed:
 			assert False, f"Timeout without seeing some lines -- seen lines are {collected_lines}"
 		else:
-			assert False, f"Process exit voluntarily but some expected lines are never seen?? -- seen lines are {collected_lines}"
+			assert False, f"Process exit voluntarily but some expected lines are never seen?? -- seen lines are {collected_lines}, stderr is {process.process.stderr.read()}"
 
 	if killed:
 		print("Warning: all expected lines are seen but process is killed anyway", file=sys.stderr)
@@ -121,6 +121,10 @@ def expect_preamble_watch_changed(line: str)->bool:
 	return "Some preamble-watch file changed" in line
 
 @possible_line_content
+def expect_no_preamble(line: str)->bool:
+	return r"File contains neither \fastrecompileendpreamble nor \begin{document} line" in line
+
+@possible_line_content
 def expect_keyboard_interrupt(line: str)->bool:
 	return "KeyboardInterrupt" in line
 
@@ -138,7 +142,9 @@ def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 def ensure_pdf_content(folder: Path, content: str, strict: bool=False)->None:
 	ensure_pdf_content_file(folder/"output"/"a.txt", content, strict=strict)
 
-def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[], temp_output_dir: bool=True)->tuple[Path, Process]:
+def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", extra_args: list[str]=[], temp_output_dir: bool=True,
+					precompile_preamble: bool=False
+					)->tuple[Path, Process]:
 	tmp_file=tmp_path/filename
 	if isinstance(content, str):
 		tmp_file.write_text(textwrap.dedent(content))
@@ -156,6 +162,7 @@ def prepare_process(tmp_path: Path, content: str|bytes, filename: str="a.tex", e
 		"--failure-cmd=echo ========failure",
 		"--output-directory="+str(output_dir),
 		"--temp-output-directory" if temp_output_dir else "--no-temp-output-directory",
+		*(["--precompile-preamble"] if precompile_preamble else []),
 		*extra_args,
 		"pdflatex", "--", filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmp_path,
 		**extra
@@ -306,7 +313,8 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 		assert count_pdflatex_child_processes(process)==1, process.process.children(recursive=True)
 		# if this is 2 then there's the resource leak
 
-def test_extra_watch_preamble_changed(tmp_path: Path)->None:
+@pytest.mark.parametrize("precompile_preamble", [True, False])
+def test_extra_watch_preamble_changed(tmp_path: Path, precompile_preamble: bool)->None:
 	extra_watch_preamble_file=tmp_path/"extra-watch-preamble-file.tex"
 	file, process=prepare_process(tmp_path, r"""
 	\documentclass{article}
@@ -314,7 +322,7 @@ def test_extra_watch_preamble_changed(tmp_path: Path)->None:
 	\begin{document}
 	\mycontent
 	\end{document}
-	""", extra_args=["--extra-watch-preamble", str(extra_watch_preamble_file)])
+	""", precompile_preamble=precompile_preamble, extra_args=["--extra-watch-preamble", str(extra_watch_preamble_file)])
 	extra_watch_preamble_file.write_text(r"""
 	\newcommand\mycontent{Helloworld1}
 	""")
@@ -327,6 +335,54 @@ def test_extra_watch_preamble_changed(tmp_path: Path)->None:
 		""")
 		ensure_print_lines(process, [expect_preamble_watch_changed, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld2")
+
+@pytest.mark.parametrize("precompile_preamble", [True, False])
+@pytest.mark.parametrize("use_explicit_endofdump", [True, False])
+def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explicit_endofdump: bool)->None:
+	file, process=prepare_process(tmp_path, r"""
+	\documentclass{article}
+	\newcommand\mycontent{Helloworld1}
+	""" + (r"\csname endofdump\endcsname" if use_explicit_endofdump else "") + r"""
+	\begin{document}
+	\mycontent
+	\end{document}
+	""", precompile_preamble=precompile_preamble)
+	with process:
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld1")
+
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\newcommand\mycontent{Helloworld2}
+		""" + (r"\csname endofdump\endcsname" if use_explicit_endofdump else "") + r"""
+		\begin{document}
+		\mycontent
+		\end{document}
+		"""))
+		ensure_print_lines(process, [expect_preamble_changed, expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld2")
+
+@pytest.mark.parametrize("precompile_preamble", [True, False])
+def test_no_preamble(tmp_path: Path, precompile_preamble: bool)->None:
+	file, process=prepare_process(tmp_path, r"""
+	Helloworld
+	""", precompile_preamble=precompile_preamble)
+	with process:
+		ensure_print_lines(process, [expect_no_preamble])
+
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		\begin{document}
+		Helloworld1
+		\end{document}
+		"""))
+		ensure_print_lines(process, [expect_success])
+		ensure_pdf_content(tmp_path, "Helloworld1")
+
+		file.write_text(textwrap.dedent(r"""
+		\documentclass{article}
+		"""))
+		ensure_print_lines(process, [expect_no_preamble])
 
 def count_pdflatex_child_processes(process: Process)->int:
 	return len([
