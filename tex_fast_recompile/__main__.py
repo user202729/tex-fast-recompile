@@ -39,6 +39,7 @@ def extract_preamble(text: bytes)->Preamble:
 
 	# split into lines
 	lines=text.splitlines()
+	lines=[line.rstrip() for line in lines]
 
 	search_str1=rb"\fastrecompileendpreamble"
 	search_str2=rb"\csname fastrecompileendpreamble\endcsname"
