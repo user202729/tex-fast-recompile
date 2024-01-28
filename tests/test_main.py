@@ -115,6 +115,10 @@ def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_st
 			expects.pop()
 			if not expects: break
 	else:
+		# collect the lines for error
+		process.kill()
+		for line in process.stdout_stream: pass
+		for line in process.stderr_stream: pass
 		if killed:
 			assert False, f"Timeout without seeing some lines -- {get_error_context()}"
 		else:

@@ -200,8 +200,9 @@ class CompilerInstanceNormal(CompilerInstance):
 	# internal
 	_process: Optional[subprocess.Popen[bytes]]=None
 	_preamble_at_start: Optional[Preamble]=None
-	_copy_stdout_thread: Optional[threading.Thread]=None
+	_read_stdout_thread: Optional[threading.Thread]=None
 	_finished: bool=False
+	_subprocess_stdout_queue: queue.Queue[bytes]=dataclasses.field(default_factory=queue.Queue)
 
 	def __enter__(self)->None:
 		filename_escaped=escape_filename_for_input(self.filename)  # may raise error on invalid filename, must do before the below (check file exist)
@@ -252,6 +253,30 @@ class CompilerInstanceNormal(CompilerInstance):
 		self._process=process
 		assert process.stdin is not None
 
+		assert self._read_stdout_thread is None
+		self._read_stdout_thread=threading.Thread(target=self._read_stdout_thread_fn)
+		self._read_stdout_thread.start()
+
+	def _read_stdout_thread_fn(self)->None:
+		process=self._process
+		while True:
+			assert process is not None
+			assert process.stdout is not None
+			# this is a bit inefficient in that it reads one byte at a time
+			# but I don't know how to do it better
+			content=process.stdout.read(1)
+			self._subprocess_stdout_queue.put(content)
+			if content==b"":
+				break
+
+	def _copy_all_stdout(self)->None:
+		while True:
+			content=self._subprocess_stdout_queue.get()
+			if content==b"":
+				break
+			sys.stdout.buffer.write(content)
+			sys.stdout.buffer.flush()
+
 	def finish(self, *, quiet: bool)->bool:
 		"""
 		Returns whether the compiler returns 0.
@@ -276,7 +301,7 @@ class CompilerInstanceNormal(CompilerInstance):
 			# don't need to send extra line, finish is finish
 			process.stdin.close()
 			if not quiet:
-				self._enable_copy_stdout_thread()
+				self._copy_all_stdout()
 			process.wait()
 			return process.returncode==0
 
@@ -293,31 +318,11 @@ class CompilerInstanceNormal(CompilerInstance):
 
 		self.compiling_callback()
 		if not quiet:
-			self._enable_copy_stdout_thread()
-
+			self._copy_all_stdout()
 		# wait for the process to finish
 		process.wait()
 
 		return process.returncode==0
-
-	def _enable_copy_stdout_thread(self)->None:
-		# start a new thread to copy process stdout to sys.stdout
-		# the copy should be done such that partially-written lines get copied immediately when they're written
-		process=self._process
-		def copy_stdout_work()->None:
-			while True:
-				assert process is not None
-				assert process.stdout is not None
-				# this is a bit inefficient in that it reads one byte at a time
-				# but I don't know how to do it better
-				content=process.stdout.read(1)
-				if content==b"":
-					break
-				sys.stdout.buffer.write(content)
-				sys.stdout.buffer.flush()
-		assert self._copy_stdout_thread is None
-		self._copy_stdout_thread=threading.Thread(target=copy_stdout_work)
-		self._copy_stdout_thread.start()
 
 	def __exit__(self, exc_type, exc_value, tb)->None:
 		if self._process is not None:
@@ -327,8 +332,8 @@ class CompilerInstanceNormal(CompilerInstance):
 			except subprocess.TimeoutExpired:
 				traceback.print_exc()
 				print("[Subprocess cannot be killed! Possible resource leak]")
-		if self._copy_stdout_thread is not None:
-			self._copy_stdout_thread.join()
+		if self._read_stdout_thread is not None:
+			self._read_stdout_thread.join()
 
 
 tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
