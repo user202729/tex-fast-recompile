@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from abc import ABC, abstractmethod
 from pathlib import Path
 from dataclasses import dataclass
 import dataclasses
@@ -131,13 +132,24 @@ class MyLatexFormatStatus(enum.Enum):
 	use=enum.auto()
 
 
+class CompilerInstance(ABC):
+	@abstractmethod
+	def __enter__(self)->None: ...
+
+	@abstractmethod
+	def finish(self, *, quiet: bool)->bool: ...
+
+	@abstractmethod
+	def __exit__(self, exc_type, exc_value, tb)->None: ...
+
+
 @dataclass
-class CompilationDaemonLowLevel:
+class CompilerInstanceNormal(CompilerInstance):
 	"""
 	Use like this:
 
 	```
-	daemon = CompilationDaemonLowLevel(...)  # create the object (did not start the compiler)
+	daemon = CompilerInstanceNormal(...)  # create the object (did not start the compiler)
 	try:
 		with daemon: # start the compiler (may raise NoPreambleError)
 			...
@@ -292,6 +304,7 @@ class CompilationDaemonLowLevel:
 		if self._copy_stdout_thread is not None:
 			self._copy_stdout_thread.join()
 
+
 tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
 tmpdir.mkdir(parents=True, exist_ok=True)
 
@@ -313,7 +326,7 @@ def _create_temp_dir()->tempfile.TemporaryDirectory:
 
 
 @dataclass
-class CompilationDaemonLowLevelTempOutputDir:
+class CompilerInstanceTempOutputDir(CompilerInstance):
 	filename: str
 	executable: str
 	jobname: str
@@ -353,7 +366,7 @@ class CompilationDaemonLowLevelTempOutputDir:
 			env["TEXINPUTS"]=str(self.output_directory) + os.pathsep + env.get("TEXINPUTS", "")
 			# https://tex.stackexchange.com/a/93733/250119 -- if it's originally empty append a trailing : or ;
 
-		self._daemon=CompilationDaemonLowLevel(
+		self._daemon=CompilerInstanceNormal(
 			filename=self.filename,
 			executable=self.executable,
 			jobname=self.jobname,
@@ -416,9 +429,10 @@ class CompilationDaemon:
 	TODO: rewrite to avoid coroutine some time to make finalization easier?
 	"""
 	args: types.SimpleNamespace
-	_daemon: Union[CompilationDaemonLowLevel, CompilationDaemonLowLevelTempOutputDir, None]=None
+	_daemon: Optional[CompilerInstance]=None
 	_temp_fmt_dir: Optional[tempfile.TemporaryDirectory]=None
 	_temp_fmt_dir_path: Optional[Path]=None
+	_daemon_output_dir: Optional[Path]=None
 
 	def __enter__(self)->None:
 		"""
@@ -505,16 +519,16 @@ class CompilationDaemon:
 		if args.compiling_cmd:
 			subprocess.run(args.compiling_cmd, shell=True, check=True)
 
-	def _create_daemon_object(self, mylatexformat_status: MyLatexFormatStatus)->Union[CompilationDaemonLowLevel, CompilationDaemonLowLevelTempOutputDir]:
+	def _create_daemon_object(self, mylatexformat_status: MyLatexFormatStatus)->CompilerInstance:
 		"""
 		Create a daemon object. Does not start the compiler, caller need to manually call __enter__().
 		"""
 		args=self.args
-		cls: Union[Type[CompilationDaemonLowLevel], Type[CompilationDaemonLowLevelTempOutputDir]]
+		cls: Union[Type[CompilerInstanceNormal], Type[CompilerInstanceTempOutputDir]]
 		if args.temp_output_directory:
-			cls=CompilationDaemonLowLevelTempOutputDir
+			cls=CompilerInstanceTempOutputDir
 		else:
-			cls=CompilationDaemonLowLevel
+			cls=CompilerInstanceNormal
 		env=dict(os.environ)
 		daemon_output_dir: Path
 		if mylatexformat_status==MyLatexFormatStatus.precompile:
@@ -524,11 +538,12 @@ class CompilationDaemon:
 			if self._temp_fmt_dir_path is not None:
 				env["TEXFORMATS"]=str(self._temp_fmt_dir_path) + os.pathsep + env.get("TEXFORMATS", "")
 			daemon_output_dir=args.output_directory
+		self._daemon_output_dir=daemon_output_dir
 		daemon=cls(
 				filename=args.filename,
 				executable=args.executable,
 				jobname=args.jobname,
-				output_directory=daemon_output_dir,
+				output_directory=self._daemon_output_dir,
 				shell_escape=args.shell_escape,
 				_8bit=getattr(args, "8bit"),
 				recorder=args.recorder,
@@ -614,14 +629,15 @@ class CompilationDaemon:
 			# this must not error out
 			shutil.copyfile(args.generated_log_path, args.copy_log)
 
-		log_text: bytes=(self._daemon.output_directory/(args.jobname+".log")).read_bytes()
+		assert self._daemon_output_dir is not None
+		log_text: bytes=(self._daemon_output_dir/(args.jobname+".log")).read_bytes()
 
 		if any(text in log_text for text in (b"Rerun to get", b"Rerun.", b"Please rerun")):
 			print("Rerunning." + "\n"*args.num_separation_lines)
 			self._stop_daemon()
 			self._recompile_preamble_not_changed()
 		else:
-			if return_0 and (self._daemon.output_directory/(args.jobname+".pdf")).is_file():
+			if return_0 and (self._daemon_output_dir/(args.jobname+".pdf")).is_file():
 				if args.success_cmd:
 					subprocess.run(args.success_cmd, shell=True, check=True)
 			else:
