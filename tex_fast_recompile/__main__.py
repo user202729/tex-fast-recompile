@@ -133,11 +133,41 @@ class MyLatexFormatStatus(enum.Enum):
 
 
 class CompilerInstance(ABC):
-	@abstractmethod
-	def __enter__(self)->None: ...
+	"""
+	Use like this::
+
+		compiler = CompilerInstance(...)  # create the object (did not start the compiler)
+		with compiler: # start the compiler (may raise NoPreambleError)
+			...
+			return_0 = compiler.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
+
+	The ``with`` block is needed to clean-up properly.
+
+	:meth:`finish` can only be called after ``with daemon:``, and can only be called once.
+	"""
 
 	@abstractmethod
-	def finish(self, *, quiet: bool)->bool: ...
+	def __enter__(self)->None:
+		"""
+		Start the compiler instance.
+
+		* If there's no preamble, don't raise an error (but possibly print the error message when finish() called)
+		* If an error happens in preamble, don't raise an error (but possibly raise it when finish() called)
+		"""
+		...
+
+	@abstractmethod
+	def finish(self, *, quiet: bool)->bool:
+		"""
+		Finalize the compilation.
+
+		* If the preamble has changed from when __enter__ is called to finish() is called, raise PreambleChangedError.
+		* Otherwise, if preamble cannot be found, raise NoPreambleError.
+		* Otherwise, possibly enable user interaction if a TeX error happens.
+
+		Return whether the compiler returned 0 (note that even if it returns 0 it may still be counted as a failure if the PDF does not exist)
+		"""
+		...
 
 	@abstractmethod
 	def __exit__(self, exc_type, exc_value, tb)->None: ...
@@ -145,25 +175,6 @@ class CompilerInstance(ABC):
 
 @dataclass
 class CompilerInstanceNormal(CompilerInstance):
-	"""
-	Use like this:
-
-	```
-	daemon = CompilerInstanceNormal(...)  # create the object (did not start the compiler)
-	try:
-		with daemon: # start the compiler (may raise NoPreambleError)
-			...
-			return_0 = daemon.finish()  # finish the compilation (may raise NoPreambleError or PreambleChangedError)
-
-	except NoPreambleError:
-		...
-	```
-
-	The ``with`` block is needed to clean-up properly.
-
-	:meth:`finish` can only be called after ``with daemon:``, and can only be called once.
-	"""
-
 	filename: str
 	executable: str
 	jobname: str
@@ -177,18 +188,29 @@ class CompilerInstanceNormal(CompilerInstance):
 	compiling_callback: Callable[[], None]
 	mylatexformat_status: MyLatexFormatStatus
 	env: dict[str, str]=dataclasses.field(default_factory=lambda: dict(os.environ))
-	pause_at_begindocument_end: bool=False  # by default it pauses at begindocument/before which is safer
-	# pausing at begindocument/end is faster but breaks hyperref
 	"""
 	Environment variables to be passed to subprocess.Popen.
 	Note that this should either be None (inherit parent's environment variables) or
 	values in os.environ should be copied in.
 	"""
+	pause_at_begindocument_end: bool=False  # by default it pauses at begindocument/before which is safer
+	# pausing at begindocument/end is faster but breaks hyperref
+
+	# internal
+	_process: Optional[subprocess.Popen[bytes]]=None
+	_preamble_at_start: Optional[Preamble]=None
+	_copy_stdout_thread: Optional[threading.Thread]=None
+	_finished: bool=False
 
 	def __enter__(self)->None:
 		filename_escaped=escape_filename_for_input(self.filename)  # may raise error on invalid filename, must do before the below (check file exist)
-		preamble=extract_preamble(Path(self.filename).read_bytes())
-		self._preamble_at_start=preamble
+		try:
+			self._preamble_at_start=extract_preamble(Path(self.filename).read_bytes())
+		except NoPreambleError:
+			pass
+		if self._preamble_at_start is None:
+			return
+		preamble=self._preamble_at_start
 
 		if self.mylatexformat_status is MyLatexFormatStatus.use:
 			compiling_filename=self.filename
@@ -226,11 +248,8 @@ class CompilerInstanceNormal(CompilerInstance):
 		command+=self.extra_commands
 
 		process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=self.env)
-		self._process: subprocess.Popen[bytes]=process
+		self._process=process
 		assert process.stdin is not None
-
-		self._copy_stdout_thread: Optional[threading.Thread]=None
-		self._finished=False
 
 	def finish(self, *, quiet: bool)->bool:
 		"""
@@ -245,6 +264,10 @@ class CompilerInstanceNormal(CompilerInstance):
 		if self._preamble_at_start!=extract_preamble(Path(self.filename).read_bytes()):
 			raise PreambleChangedError()
 
+		if self._preamble_at_start is None:
+			raise NoPreambleError()
+
+		assert process is not None
 		assert process.stdin is not None
 		assert process.stdout is not None
 
@@ -282,6 +305,7 @@ class CompilerInstanceNormal(CompilerInstance):
 		process=self._process
 		def copy_stdout_work()->None:
 			while True:
+				assert process is not None
 				assert process.stdout is not None
 				# this is a bit inefficient in that it reads one byte at a time
 				# but I don't know how to do it better
@@ -295,12 +319,13 @@ class CompilerInstanceNormal(CompilerInstance):
 		self._copy_stdout_thread.start()
 
 	def __exit__(self, exc_type, exc_value, tb)->None:
-		self._process.kill()
-		try:
-			self._process.wait(timeout=1)  # on Windows this is needed to ensure process really exited -- #14
-		except subprocess.TimeoutExpired:
-			traceback.print_exc()
-			print("[Subprocess cannot be killed! Possible resource leak]")
+		if self._process is not None:
+			self._process.kill()
+			try:
+				self._process.wait(timeout=1)  # on Windows this is needed to ensure process really exited -- #14
+			except subprocess.TimeoutExpired:
+				traceback.print_exc()
+				print("[Subprocess cannot be killed! Possible resource leak]")
 		if self._copy_stdout_thread is not None:
 			self._copy_stdout_thread.join()
 
@@ -366,7 +391,7 @@ class CompilerInstanceTempOutputDir(CompilerInstance):
 			env["TEXINPUTS"]=str(self.output_directory) + os.pathsep + env.get("TEXINPUTS", "")
 			# https://tex.stackexchange.com/a/93733/250119 -- if it's originally empty append a trailing : or ;
 
-		self._daemon=CompilerInstanceNormal(
+		self._compiler=CompilerInstanceNormal(
 			filename=self.filename,
 			executable=self.executable,
 			jobname=self.jobname,
@@ -382,10 +407,10 @@ class CompilerInstanceTempOutputDir(CompilerInstance):
 			mylatexformat_status=self.mylatexformat_status,
 			pause_at_begindocument_end=True,
 			)
-		self._daemon.__enter__()
+		self._compiler.__enter__()
 
 	def finish(self, *, quiet: bool)->bool:
-		result=self._daemon.finish(quiet=quiet)
+		result=self._compiler.finish(quiet=quiet)
 		# copy back all the generated files in the target folder to the original output directory
 		for file in self._temp_output_dir_path.iterdir():
 			if file.is_file():
@@ -395,7 +420,7 @@ class CompilerInstanceTempOutputDir(CompilerInstance):
 		return result
 
 	def __exit__(self, exc_type, exc_value, tb)->None:
-		self._daemon.__exit__(exc_type, exc_value, tb)
+		self._compiler.__exit__(exc_type, exc_value, tb)
 		try:
 			shutil.rmtree(self._temp_output_dir_path)  # oddly cleanup() alone does not always remove the directory?
 		except FileNotFoundError:
@@ -425,11 +450,9 @@ class CompilationDaemon:
 	May raise ``FileNotFoundError`` if the file does not exist. 
 
 	Otherwise never raises error. Status are reported (printed) to terminal.
-
-	TODO: rewrite to avoid coroutine some time to make finalization easier?
 	"""
 	args: types.SimpleNamespace
-	_daemon: Optional[CompilerInstance]=None
+	_compiler: Optional[CompilerInstance]=None
 	_temp_fmt_dir: Optional[tempfile.TemporaryDirectory]=None
 	_temp_fmt_dir_path: Optional[Path]=None
 	_daemon_output_dir: Optional[Path]=None
@@ -442,34 +465,27 @@ class CompilationDaemon:
 			self._temp_fmt_dir=_create_temp_dir()
 			self._temp_fmt_dir_path=Path(self._temp_fmt_dir.name)
 			self._temp_fmt_dir.__enter__()
-		self._start_daemon(quiet=True)
+		self._prepare_compiler(quiet=True)
 
 	def _print_no_preamble_error(self, e: NoPreambleError)->None:
 		sys.stdout.write(f"! {e.args[0]}.\n")
 		sys.stdout.flush()
 
-	def _start_daemon(self, *, quiet: bool)->bool:
+	def _prepare_compiler(self, *, quiet: bool)->bool:
 		"""
-		Start the daemon, print out the errors if preamble raise error.
+		Start the compiler instance.
 
-		Return whether it's successful.
-
-		May raise NoPreambleError if not quiet.
+		TODO refactor what value is returned etc.
 		"""
 		args=self.args
-		assert self._daemon is None
+		assert self._compiler is None
 		if args.precompile_preamble and not self._path_to_fmt().is_file():
 			if not self._precompile_preamble(quiet=quiet):
 				return False
 			assert self._path_to_fmt().is_file()
-		self._daemon=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
-		try:
-			self._daemon.__enter__()
-			return True
-		except NoPreambleError as e:
-			self._daemon=None
-			if not quiet: raise
-			return False
+		self._compiler=self._create_daemon_object(MyLatexFormatStatus.use if args.precompile_preamble else MyLatexFormatStatus.not_use)
+		self._compiler.__enter__()
+		return True
 
 	def _precompile_preamble(self, *, quiet: bool)->bool:
 		"""
@@ -494,16 +510,16 @@ class CompilationDaemon:
 		"""
 		Clean up everything.
 		"""
-		if self._daemon is not None:
-			self._stop_daemon(exc_type, exc_value, tb)
+		if self._compiler is not None:
+			self._stop_compiler(exc_type, exc_value, tb)
 		if self._temp_fmt_dir is not None:
 			self._temp_fmt_dir.__exit__(exc_type, exc_value, tb)
 		# TODO doesn't look safe, use ExitStack?
 
-	def _stop_daemon(self, exc_type=None, exc_value=None, tb=None)->None:
-		assert self._daemon is not None
-		self._daemon.__exit__(exc_type, exc_value, tb)
-		self._daemon=None
+	def _stop_compiler(self, exc_type=None, exc_value=None, tb=None)->None:
+		assert self._compiler is not None
+		self._compiler.__exit__(exc_type, exc_value, tb)
+		self._compiler=None
 
 	def recompile(self, recompile_preamble: bool)->None:
 		args=self.args
@@ -570,7 +586,7 @@ class CompilationDaemon:
 
 		if args.precompile_preamble:
 			self._unlink_fmt()
-		self._stop_daemon()
+		self._stop_compiler()
 
 		if args.precompile_preamble and not self._path_to_fmt().is_file():
 			precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
@@ -593,21 +609,21 @@ class CompilationDaemon:
 	def _recompile_preamble_not_changed(self)->None:
 		args=self.args
 
-		if self._daemon is None:
+		if self._compiler is None:
 			try:
-				if not self._start_daemon(quiet=False):
+				if not self._prepare_compiler(quiet=False):
 					self._on_failure()
 					return
 			except NoPreambleError as e:
-				assert self._daemon is None
+				assert self._compiler is None
 				self._print_no_preamble_error(e)
 				return
 
-		assert self._daemon is not None
+		assert self._compiler is not None
 		try:
-			return_0=self._daemon.finish(quiet=False)
+			return_0=self._compiler.finish(quiet=False)
 		except NoPreambleError as e:
-			self._stop_daemon()
+			self._stop_compiler()
 			self._print_no_preamble_error(e)
 			return
 		except PreambleChangedError:
@@ -634,7 +650,7 @@ class CompilationDaemon:
 
 		if any(text in log_text for text in (b"Rerun to get", b"Rerun.", b"Please rerun")):
 			print("Rerunning." + "\n"*args.num_separation_lines)
-			self._stop_daemon()
+			self._stop_compiler()
 			self._recompile_preamble_not_changed()
 		else:
 			if return_0 and (self._daemon_output_dir/(args.jobname+".pdf")).is_file():
@@ -643,8 +659,8 @@ class CompilationDaemon:
 			else:
 				self._on_failure()
 
-		self._stop_daemon()
-		self._start_daemon(quiet=True)
+		self._stop_compiler()
+		self._prepare_compiler(quiet=True)
 
 	def _on_failure(self)->None:
 		args=self.args

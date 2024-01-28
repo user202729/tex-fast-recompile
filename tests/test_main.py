@@ -7,27 +7,47 @@ import pytest
 from pathlib import Path
 import textwrap
 import subprocess
-from typing import Callable
+from typing import Callable, Iterator, Any
 import time
 import signal
 import shutil
+import shlex
 import psutil  # type: ignore
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 LinePredicate=Callable[[str], bool]
 line_predicates: list[LinePredicate]=[]
 
+
+@dataclass
+class Stream:
+	stream: Any
+	collected_lines: list[str]=field(default_factory=list)
+
+	def __iter__(self)->Iterator[str]:
+		for line in self.stream:
+			self.collected_lines.append(line)
+			yield line
+
+	def debug_collected_lines(self)->str:
+		return "```\n" + "".join(self.collected_lines) + "```\n"
+
+
 @dataclass
 class Process:
-	args: tuple[str]
+	cmd: list[str]
 	kwargs: dict[str, str]
 
-	def __init__(self, *args, **kwargs)->None:
-		self.args=args
+	def __init__(self, cmd: list[str], **kwargs: dict[str, str]):
+		self.cmd=cmd
 		self.kwargs=kwargs
 
 	def __enter__(self)->Process:
-		self.process=psutil.Popen(*self.args, **self.kwargs)
+		self.process=psutil.Popen(self.cmd, **self.kwargs)
+		if self.process.stdout is not None:
+			self.stdout_stream=Stream(self.process.stdout)
+		if self.process.stderr is not None:
+			self.stderr_stream=Stream(self.process.stderr)
 		return self
 
 	def kill(self)->None:
@@ -61,6 +81,9 @@ class Process:
 
 	def __exit__(self, exc_type, exc_value, traceback)->None:
 		self.kill()
+
+	def __repr__(self)->str:
+		return f"Process(cmd={' '.join(map(shlex.quote, self.cmd))!r}, kwargs={self.kwargs!r})"
 		
 
 def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_stdout: bool=True)->None:
@@ -73,18 +96,15 @@ def ensure_print_lines(process: Process, expects: list[LinePredicate], *, use_st
 	timer.start()
 	expects=expects[::-1]
 	if use_stdout:
-		assert process.process.stdout is not None
-		stream=process.process.stdout
+		stream=process.stdout_stream
 	else:
 		assert process.process.stderr is not None
-		stream=process.process.stderr
-	collected_lines: list[str]=[]
+		stream=process.stderr_stream
 
 	def get_error_context()->str:
-		return f"seen lines are {collected_lines}, stderr is '''{process.process.stderr.read()}'''"
+		return f"{use_stdout=}, stdout={process.stdout_stream.debug_collected_lines()}, stderr={process.stderr_stream.debug_collected_lines()}, process={process}"
 
 	for line in stream:
-		collected_lines.append(line)
 		waiting_for=expects[-1]
 
 		assert waiting_for in line_predicates
