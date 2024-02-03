@@ -71,6 +71,33 @@ In the code above, `recompile_preamble=True` can be explicitly passed to recompi
 
 In order to know what arguments can be passed to `parse_args`, of course you can run `tex_fast_recompile --help`.
 
+TODO:
+
+* Things absolutely needed:
+  * `args.executable`
+  * `args.jobname`
+  * `args.filename`
+  * `args.output_directory`
+  * `args.extra_args` // better named `cmdline_options`
+  * `args.precompile_preamble`
+  * `args.close_stdin`  // not working at the moment
+  * `args.temp_output_directory`  // should have been named `use_temp_output_directory`
+  * `args.recorder`, `args.shell_escape`, `getattr(args, "8bit")` // should have been folded in `extra_args` instead
+
+* Things that should have been properties:
+  * `args.generated_log_path`
+  * `args.generated_pdf_path`
+
+* Things that should be handled outside:
+  * `args.success_cmd`
+  * `args.compiling_cmd`
+  * `args.failure_cmd`
+  * `args.show_time`
+  * `args.num_separation_lines`
+  * `args.copy_log`
+  * `args.copy_output`
+
+
 ### Daemon mode
 
 TODO
