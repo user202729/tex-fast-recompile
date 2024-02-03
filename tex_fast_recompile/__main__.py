@@ -272,6 +272,7 @@ class CompilerInstanceNormal(CompilerInstance):
 			content=process.stdout.read(1)
 			self._subprocess_stdout_queue.put(content)
 			if content==b"":
+				process.stdout.close()
 				break
 
 	def _copy_all_stdout(self)->None:
@@ -339,7 +340,9 @@ class CompilerInstanceNormal(CompilerInstance):
 				print("[Subprocess cannot be killed! Possible resource leak]")
 		if self._read_stdout_thread is not None:
 			self._read_stdout_thread.join()
-
+		if self._process is not None:
+			if self._process.stdin: self._process.stdin.close()
+			if self._process.stdout: self._process.stdout.close()
 
 tmpdir=Path(tempfile.gettempdir())/".tex-fast-recompile-tmp"
 tmpdir.mkdir(parents=True, exist_ok=True)
