@@ -53,7 +53,23 @@ let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 
 ### Python API
 
-TODO
+You can also use the program from a Python script, but the interface, being originally designed as a command-line program, needs some major refactoring.
+
+```python
+from tex_fast_recompile import CompilationDaemon, get_parser
+
+args=get_parser().parse_args(["--precompile-preamble", "--jobname", "main", "--output-directory", d.name, "pdflatex", str(f)])
+
+daemon=CompilationDaemon(args=args)
+daemon.__enter__()
+
+# each time the file changes, run the following.
+daemon.recompile(recompile_preamble=False)
+```
+
+In the code above, `recompile_preamble=True` can be explicitly passed to recompile the preamble. It will usually be automatic, unless the preamble itself does not change but some file that the preamble depends on changed.
+
+In order to know what arguments can be passed to `parse_args`, of course you can run `tex_fast_recompile --help`.
 
 ### Daemon mode
 
@@ -110,7 +126,12 @@ restarting your computer.)
 
 Usually, features that requires shell-escape may fail when the output directory is not the current directory.
 
-A command `\fastrecompileoutputdir` is provided, that fully expands to the real output directory (which is the temporary output directory in case `--temp-output-dir` is provided, the output files will be copied back to the written output directory when the compilation finishes).
+A command `\fastrecompileoutputdir` is provided, that fully expands to the *real* output directory (which is **different** from the temporary output directory in case `--temp-output-dir` is provided, the output files will be copied back to the written output directory *only* when the compilation finishes).
+
+For example: if in directory `/a`, user type `tex_fast_recompile pdflatex --output-directory=/b main.tex`, then:
+* `\fastrecompileoutputdir` is `/tmp/.tex-fast-recompile-tmp/12345-abcdef/` or something random.
+* `\fastrecompilerealoutputdir` is `/b/`.
+They will always have the trailing slash.
 
 Depends on the package, different ways are needed to make it aware of the output directory. For example, for the `rubikrotation` package:
 

@@ -204,6 +204,8 @@ class CompilerInstanceNormal(CompilerInstance):
 	_finished: bool=False
 	_subprocess_stdout_queue: queue.Queue[bytes]=dataclasses.field(default_factory=queue.Queue)
 
+	init_code: str=""
+
 	def __enter__(self)->None:
 		filename_escaped=escape_filename_for_input(self.filename)  # may raise error on invalid filename, must do before the below (check file exist)
 		try:
@@ -218,7 +220,10 @@ class CompilerInstanceNormal(CompilerInstance):
 			compiling_filename=self.filename
 
 		else:
-			compiling_filename=r"\RequirePackage{fastrecompile}\edef\fastrecompileoutputdir{" + escape_filename_for_input(str(self.output_directory)) + r"}\fastrecompilecheckversion{0.5.0}"
+			init_code=self.init_code
+			init_code+=r"\edef\fastrecompileoutputdir{"+escape_filename_for_input(str(self.output_directory)+os.sep)+"}"
+
+			compiling_filename=r"\RequirePackage{fastrecompile}" + init_code + r"\fastrecompilecheckversion{0.5.0}"
 			if preamble.implicit:
 				if self.pause_at_begindocument_end:
 					compiling_filename+=r"\fastrecompilesetimplicitpreambleii"
@@ -412,6 +417,7 @@ class CompilerInstanceTempOutputDir(CompilerInstance):
 			env=env,
 			mylatexformat_status=self.mylatexformat_status,
 			pause_at_begindocument_end=True,
+			init_code=r"\edef\fastrecompilerealoutputdir{"+escape_filename_for_input(str(self.output_directory)+os.sep)+"}"
 			)
 		self._compiler.__enter__()
 
