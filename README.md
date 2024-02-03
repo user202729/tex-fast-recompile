@@ -55,6 +55,8 @@ let g:vimtex_compiler_latexmk = { 'executable' : 'tex_fast_recompile_latexmk' }
 
 You can also use the program from a Python script, but the interface, being originally designed as a command-line program, needs some major refactoring.
 
+In particular, in order to pass arguments to it, you'll need to parse argument from a command-line format, and subprocess's stdout is always printed to stdout.
+
 ```python
 from tex_fast_recompile import CompilationDaemon, get_parser
 
