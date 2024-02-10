@@ -25,9 +25,13 @@ class Stream:
 	collected_lines: list[str]=field(default_factory=list)
 
 	def __iter__(self)->Iterator[str]:
-		for line in self.stream:
-			self.collected_lines.append(line)
-			yield line
+		try:
+			for line in self.stream:
+				self.collected_lines.append(line)
+				yield line
+		except:
+			sys.stderr.write("stream content = "+self.debug_collected_lines())
+			raise
 
 	def debug_collected_lines(self)->str:
 		return "```\n" + "".join(self.collected_lines) + "```\n"
@@ -44,6 +48,7 @@ class Process:
 
 	def __enter__(self)->Process:
 		self.process=psutil.Popen(self.cmd, **self.kwargs)
+		self.process.__enter__()
 		if self.process.stdout is not None:
 			self.stdout_stream=Stream(self.process.stdout)
 		if self.process.stderr is not None:
@@ -63,8 +68,11 @@ class Process:
 				except psutil.NoSuchProcess: pass
 				p.wait()
 		else:
-			try: process.kill()
+			try:
+				process.kill()
+				process.wait()
 			except psutil.NoSuchProcess: pass
+		process.__exit__(None, None, None)  # close stdin stdout stderr
 
 	def keyboard_interrupt(self)->None:
 		if sys.platform=="win32":
@@ -170,6 +178,10 @@ def expect_keyboard_interrupt(line: str)->bool:
 def expect_cannot_find_format(line: str)->bool:
 	return "I can't find the format" in line
 
+@possible_line_content
+def expect_output_written(line: str)->bool:
+	return "Output written on" in line
+
 def ensure_pdf_content_file(file: Path, content: str, strict: bool=False)->None:
 	txt_file=file.with_suffix(".txt")
 	pdf_file=file.with_suffix(".pdf")
@@ -250,7 +262,7 @@ def test_recompile(tmp_path: Path, extra_args: list[str])->None:
 	\end{document}
 	""", extra_args=extra_args)
 	with process:
-		ensure_print_lines(process, [expect_rerunning, expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_rerunning, expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "page[1]")
 		tmp_file.write_text(textwrap.dedent(r"""
 		\documentclass{article}
@@ -260,7 +272,7 @@ def test_recompile(tmp_path: Path, extra_args: list[str])->None:
 		\label{abc}page[\pageref{abc}]
 		\end{document}
 		"""))
-		ensure_print_lines(process, [expect_rerunning, expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_rerunning, expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "page[2]")
 
 
@@ -277,7 +289,7 @@ def test_hyperref_shipout_begindocument(tmp_path: Path, temp_output_dir: bool, e
 	\end{document}
 	""", temp_output_dir=temp_output_dir)
 	with process:
-		ensure_print_lines(process, [expect_rerunning, expect_success])  # rerun because of hyperref write outline to a.out
+		ensure_print_lines(process, [expect_output_written, expect_rerunning, expect_output_written, expect_success])  # rerun because of hyperref write outline to a.out
 		time.sleep(4)
 		if explicit_end_preamble_mark and not temp_output_dir:
 			with pytest.raises(subprocess.CalledProcessError):
@@ -295,7 +307,7 @@ def test_weird_file_content(tmp_path: Path)->None:
 	\end{document}
 	""").encode("latin1"))
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "helloworld")
 
 skipif_windows=pytest.mark.skipif('sys.platform=="win32"')
@@ -334,7 +346,7 @@ def test_weird_file_name(tmp_path: Path, filename: str, valid: bool, temp_output
 			assert process.process.stderr
 			assert "AssertionError" in process.process.stderr.read()
 			return
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content_file(tmp_path/"output"/(filename+".pdf"), "helloworld")
 
 def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
@@ -345,7 +357,7 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 	\end{document}
 	""")
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 
 		time.sleep(1)
 		assert count_pdflatex_child_processes(process)==1, process.process.children(recursive=True)
@@ -357,7 +369,7 @@ def test_subprocess_killed_on_preamble_change(tmp_path: Path)->None:
 		helloworld
 		\end{document}
 		"""))
-		ensure_print_lines(process, [expect_preamble_changed, expect_success])
+		ensure_print_lines(process, [expect_preamble_changed, expect_output_written, expect_success])
 		time.sleep(1)
 		assert count_pdflatex_child_processes(process)==1, process.process.children(recursive=True)
 		# if this is 2 then there's the resource leak
@@ -376,13 +388,13 @@ def test_extra_watch_preamble_changed(tmp_path: Path, precompile_preamble: bool)
 	\newcommand\mycontent{Helloworld1}
 	""")
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld1")
 
 		extra_watch_preamble_file.write_text(r"""
 		\newcommand\mycontent{Helloworld2}
 		""")
-		ensure_print_lines(process, [expect_preamble_watch_changed, expect_success])
+		ensure_print_lines(process, [expect_preamble_watch_changed, expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld2")
 
 @pytest.mark.parametrize("precompile_preamble", [True, False])
@@ -398,7 +410,7 @@ def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explici
 	\end{document}
 	""", precompile_preamble=precompile_preamble, output_dir_name=output_dir_name)
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld1", output_dir_name=output_dir_name)
 
 		file.write_text(textwrap.dedent(r"""
@@ -409,7 +421,7 @@ def test_preamble_changed(tmp_path: Path, precompile_preamble: bool, use_explici
 		\mycontent
 		\end{document}
 		"""))
-		ensure_print_lines(process, [expect_preamble_changed, expect_success])
+		ensure_print_lines(process, [expect_preamble_changed, expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld2", output_dir_name=output_dir_name)
 
 @pytest.mark.parametrize("precompile_preamble", [True, False])
@@ -425,7 +437,7 @@ def test_preamble_changed_between_runs(tmp_path: Path, precompile_preamble: bool
 	\end{document}
 	""", precompile_preamble=precompile_preamble, output_dir_name=output_dir_name)
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld1,a", output_dir_name=output_dir_name)
 
 	file, process=prepare_process(tmp_path, r"""
@@ -437,7 +449,7 @@ def test_preamble_changed_between_runs(tmp_path: Path, precompile_preamble: bool
 	\end{document}
 	""", precompile_preamble=precompile_preamble, output_dir_name=output_dir_name)
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld2,a", output_dir_name=output_dir_name)
 
 @pytest.mark.parametrize("precompile_preamble", [True, False])
@@ -454,7 +466,7 @@ def test_no_preamble(tmp_path: Path, precompile_preamble: bool)->None:
 		Helloworld1
 		\end{document}
 		"""))
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld1")
 
 		file.write_text(textwrap.dedent(r"""
@@ -480,7 +492,7 @@ def test_error_in_preamble(tmp_path: Path, precompile_preamble: bool)->None:
 		Helloworld2
 		\end{document}
 		"""))
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld2")
 
 		file.write_text(textwrap.dedent(r"""
@@ -532,7 +544,8 @@ def test_keyboard_interrupt_python(tmp_path: Path)->None:
 		\end{document}
 		""")
 	with process:
-		ensure_print_lines(process, [expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_success])
+		assert "Time taken" in process.process.stdout.readline()
 		time.sleep(0.2)
 		process.keyboard_interrupt()
 		process.must_terminate_soon()
@@ -558,5 +571,5 @@ def test_beamer(tmp_path: Path, temp_output_dir: bool)->None:
 		\end{document}
 		""", temp_output_dir=temp_output_dir)
 	with process:
-		ensure_print_lines(process, [expect_rerunning, expect_success])
+		ensure_print_lines(process, [expect_output_written, expect_rerunning, expect_output_written, expect_success])
 		ensure_pdf_content(tmp_path, "Helloworld")

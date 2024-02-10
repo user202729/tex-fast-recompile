@@ -3,11 +3,12 @@ from __future__ import annotations
 import argparse
 import sys
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from pathlib import Path
 from dataclasses import dataclass
 import dataclasses
 import types
-from typing import Iterator, Optional, List, Callable, Union, Type, Generator
+from typing import Iterator, Optional, List, Callable, Union, Type, Generator, Any
 import subprocess
 import threading
 import queue
@@ -17,6 +18,7 @@ import time
 import tempfile
 import traceback
 import os
+import io
 #import atexit
 import enum
 import psutil  # type: ignore
@@ -113,7 +115,7 @@ def get_parser()->argparse.ArgumentParser:
 					 help="After compilation finishes, copy the log file to the given path. "
 					 "If you want to read the log file, you must use this option and read it at the target path.")
 	parser.add_argument("--num-separation-lines", type=int, default=5, help="Number of separation lines to print between compilation.")
-	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation.")
+	parser.add_argument("--compiling-cmd", help="Command to run before start a compilation. Currently does not really work.")
 	parser.add_argument("--success-cmd", help="Command to run after compilation finishes successfully.")
 	parser.add_argument("--failure-cmd", help="Command to run after compilation fails.")
 	parser.add_argument("--polling-duration", type=float, default=0,
@@ -158,7 +160,7 @@ class CompilerInstance(ABC):
 		...
 
 	@abstractmethod
-	def finish(self, *, quiet: bool)->bool:
+	def finish(self)->bool:
 		"""
 		Finalize the compilation.
 
@@ -172,6 +174,94 @@ class CompilerInstance(ABC):
 
 	@abstractmethod
 	def __exit__(self, exc_type, exc_value, tb)->None: ...
+
+	def get_subprocess_stdout(self)->PipeReader:
+		return self.subprocess_stdout  # type: ignore
+
+
+@dataclass
+class PipeReader(io.RawIOBase):
+	"""
+	The reader end of an in-memory pipe.
+
+	Reads are blocking.
+	"""
+	_queue: queue.Queue[Optional[int]]
+	_eof_reached: bool=False
+
+	def readinto(self, b: Any)->int:
+		if not b: return 0
+		if self._eof_reached: return 0
+		value=self._queue.get()
+		if value is None:
+			self._eof_reached=True
+			return 0
+		try:
+			b[0]=value
+		except:
+			raise RuntimeError(f"Error --- b = {b}, value = {value}")
+		return 1
+
+	def readable(self)->bool:
+		return True
+
+
+@dataclass
+class PipeWriter(io.RawIOBase):
+	"""
+	The writer end of an in-memory pipe.
+	"""
+	_queue: queue.Queue[Optional[int]]
+	_closed: bool=False
+
+	def writable(self)->bool:
+		return True
+
+	def write(self, buffer: Any)->None:
+		if self._closed:
+			raise ValueError("write() cannot be called after close()")
+		for b in buffer:
+			assert isinstance(b, int)
+			self._queue.put(b)
+
+	def close(self)->None:
+		if self._closed: return
+		self._queue.put(None)
+		self._closed=True
+
+
+def create_pipe()->tuple[PipeReader, PipeWriter]:
+	q: queue.Queue=queue.Queue()
+	return PipeReader(q), PipeWriter(q)
+
+
+@contextmanager
+def copy_stream(source, target)->Iterator[None]:
+	"""
+	Start a thread in the background to copy everything in source to target.
+
+	Note that target is a function that takes in bytes object, not a stream itself.
+
+	Usage::
+
+		with copy_stream(source, target):
+			...
+		# when the with block exits, everything in source has been copied to target.
+	"""
+	caller_stack=traceback.format_stack()
+	def run()->None:
+		try:
+			while True:
+				content=source.read(1)
+				if not content:
+					break
+				target.write(content)
+		except:
+			raise RuntimeError(f"Unexpected error happened while copying from {source} to {target} --- called from ```\n{''.join(caller_stack)}\n```")
+	thread=threading.Thread(target=run)
+	thread.start()
+	yield
+	thread.join()
 
 
 @dataclass
@@ -197,12 +287,26 @@ class CompilerInstanceNormal(CompilerInstance):
 	pause_at_begindocument_end: bool=False  # by default it pauses at begindocument/before which is safer
 	# pausing at begindocument/end is faster but breaks hyperref
 
+	_subprocess_pipe: tuple[PipeReader, PipeWriter]=dataclasses.field(default_factory=create_pipe)
+
+	@property
+	def subprocess_stdout(self)->PipeReader:
+		"""
+		The stdout of the compiler can be read from here.
+		"""
+		assert self._subprocess_pipe is not None
+		return self._subprocess_pipe[0]
+
 	# internal
 	_process: Optional[subprocess.Popen[bytes]]=None
 	_preamble_at_start: Optional[Preamble]=None
 	_read_stdout_thread: Optional[threading.Thread]=None
 	_finished: bool=False
 	_subprocess_stdout_queue: queue.Queue[bytes]=dataclasses.field(default_factory=queue.Queue)
+	"""
+	Unlike subprocess_stdout, this holds the stdout of the process running in the background.
+	Until finish() is called, subprocess_stdout will be empty, while this queue is not empty.
+	"""
 
 	init_code: str=""
 
@@ -280,10 +384,10 @@ class CompilerInstanceNormal(CompilerInstance):
 			content=self._subprocess_stdout_queue.get()
 			if content==b"":
 				break
-			sys.stdout.buffer.write(content)
-			sys.stdout.buffer.flush()
+			self._subprocess_pipe[1].write(content)
+		self._subprocess_pipe[1].close()
 
-	def finish(self, *, quiet: bool)->bool:
+	def finish(self)->bool:
 		"""
 		Returns whether the compiler returns 0.
 		Note that it's possible for the compiler to return 0 and yet the compilation failed, if no PDF is generated.
@@ -306,8 +410,7 @@ class CompilerInstanceNormal(CompilerInstance):
 		if self.mylatexformat_status is MyLatexFormatStatus.precompile:
 			# don't need to send extra line, finish is finish
 			process.stdin.close()
-			if not quiet:
-				self._copy_all_stdout()
+			self._copy_all_stdout()
 			process.wait()
 			return process.returncode==0
 
@@ -323,8 +426,7 @@ class CompilerInstanceNormal(CompilerInstance):
 			pass
 
 		self.compiling_callback()
-		if not quiet:
-			self._copy_all_stdout()
+		self._copy_all_stdout()
 		# wait for the process to finish
 		process.wait()
 
@@ -424,8 +526,12 @@ class CompilerInstanceTempOutputDir(CompilerInstance):
 			)
 		self._compiler.__enter__()
 
-	def finish(self, *, quiet: bool)->bool:
-		result=self._compiler.finish(quiet=quiet)
+	@property
+	def subprocess_stdout(self)->PipeReader:
+		return self._compiler.subprocess_stdout
+
+	def finish(self)->bool:
+		result=self._compiler.finish()
 		# copy back all the generated files in the target folder to the original output directory
 		for file in self._temp_output_dir_path.iterdir():
 			if file.is_file():
@@ -472,6 +578,23 @@ class CompilationDaemon:
 	_temp_fmt_dir_path: Optional[Path]=None
 	_daemon_output_dir: Optional[Path]=None
 
+	_subprocess_pipe: tuple[PipeReader, PipeWriter]=dataclasses.field(default_factory=create_pipe)
+
+	@property
+	def subprocess_stdout(self)->PipeReader:
+		"""
+		The stdout of the compiler can be read from here.
+		
+		Usage::
+			stdout=daemon.subprocess_stdout  # Note that this must be cached!
+			def read_stdout():
+				...
+			threading.Thread(target=read_stdout).start()
+			daemon.recompile()
+			# at this point, daemon.subprocess_stdout is a new empty file
+		"""
+		return self._subprocess_pipe[0]
+
 	def __enter__(self)->None:
 		"""
 		Start the compiler. See class documentation for detail.
@@ -483,8 +606,7 @@ class CompilationDaemon:
 		self._prepare_compiler(quiet=True)
 
 	def _print_no_preamble_error(self, e: NoPreambleError)->None:
-		sys.stdout.write(f"! {e.args[0]}.\n")
-		sys.stdout.flush()
+		self._subprocess_pipe[1].write(f"! {e.args[0]}.\n")
 
 	def _prepare_compiler(self, *, quiet: bool)->bool:
 		"""
@@ -502,6 +624,7 @@ class CompilationDaemon:
 		self._compiler.__enter__()
 		return True
 
+
 	def _precompile_preamble(self, *, quiet: bool)->bool:
 		"""
 		Precompile the preamble.
@@ -514,7 +637,7 @@ class CompilationDaemon:
 
 		try:
 			with precompile_daemon:
-				return_0=precompile_daemon.finish(quiet=quiet)
+				return_0=precompile_daemon.finish()
 		except NoPreambleError as e:
 			if not quiet: raise
 			return False
@@ -535,15 +658,6 @@ class CompilationDaemon:
 		assert self._compiler is not None
 		self._compiler.__exit__(exc_type, exc_value, tb)
 		self._compiler=None
-
-	def recompile(self, recompile_preamble: bool)->None:
-		args=self.args
-		self.start_time=time.time()
-		if recompile_preamble:
-			sys.stdout.write("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
-			self._recompile_preamble_changed()
-		else:
-			self._recompile_preamble_not_changed()
 
 	def compiling_callback(self)->None:
 		args=self.args
@@ -596,7 +710,23 @@ class CompilationDaemon:
 	def _unlink_fmt(self)->None:
 		self._path_to_fmt().unlink(missing_ok=True)
 
-	def _recompile_preamble_changed(self)->None:
+	def recompile(self, recompile_preamble: bool)->bool:
+		"""
+		Recompile the file.
+
+		Returns whether the compilation succeeded --- that is, the compiler returncode is 0
+		and the PDF file is produced.
+		"""
+		args=self.args
+		if recompile_preamble:
+			self._write_as_subprocess("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
+			result=self._recompile_preamble_changed()
+		else:
+			result=self._recompile_preamble_not_changed()
+		self._subprocess_pipe=create_pipe()
+		return result
+
+	def _recompile_preamble_changed(self)->bool:
 		args=self.args
 
 		if args.precompile_preamble:
@@ -608,47 +738,42 @@ class CompilationDaemon:
 
 			try:
 				with precompile_daemon:
-					return_0=precompile_daemon.finish(quiet=False)
+					with copy_stream(precompile_daemon.get_subprocess_stdout(), self._subprocess_pipe[1]):
+						return_0=precompile_daemon.finish()
 			except NoPreambleError as e:
 				self._print_no_preamble_error(e)
-				return
+				return False
 
 			if not return_0:
-				self._on_failure()
-				return
+				return False
 
 			assert self._path_to_fmt().is_file()
 
-		self._recompile_preamble_not_changed()
+		return self._recompile_preamble_not_changed()
 
-	def _recompile_preamble_not_changed(self)->None:
+	def _recompile_preamble_not_changed(self)->bool:
 		args=self.args
 
 		if self._compiler is None:
 			try:
 				if not self._prepare_compiler(quiet=False):
-					self._on_failure()
-					return
+					return False
 			except NoPreambleError as e:
 				assert self._compiler is None
 				self._print_no_preamble_error(e)
-				return
+				return False
 
 		assert self._compiler is not None
 		try:
-			return_0=self._compiler.finish(quiet=False)
+			with copy_stream(self._compiler.get_subprocess_stdout(), self._subprocess_pipe[1]):
+				return_0=self._compiler.finish()
 		except NoPreambleError as e:
 			self._stop_compiler()
 			self._print_no_preamble_error(e)
-			return
+			return False
 		except PreambleChangedError:
-			sys.stdout.write("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
-			self._recompile_preamble_changed()
-			return
-
-		if args.show_time:
-			sys.stdout.write(f"Time taken: {time.time()-self.start_time:.3f}s\n")
-			sys.stdout.flush()
+			self._write_as_subprocess("Preamble changed, recompiling." + "\n"*args.num_separation_lines)
+			return self._recompile_preamble_changed()
 
 		if args.copy_output is not None:
 			try:
@@ -664,24 +789,22 @@ class CompilationDaemon:
 		log_text: bytes=(self._daemon_output_dir/(args.jobname+".log")).read_bytes()
 
 		if any(text in log_text for text in (b"Rerun to get", b"Rerun.", b"Please rerun")):
-			print("Rerunning." + "\n"*args.num_separation_lines)
+			self._write_as_subprocess("Rerunning." + "\n"*args.num_separation_lines)
 			self._stop_compiler()
-			self._recompile_preamble_not_changed()
+			result=self._recompile_preamble_not_changed()
 		else:
-			if return_0 and (self._daemon_output_dir/(args.jobname+".pdf")).is_file():
-				if args.success_cmd:
-					subprocess.run(args.success_cmd, shell=True, check=True)
-			else:
-				self._on_failure()
+			result=return_0 and (self._daemon_output_dir/(args.jobname+".pdf")).is_file()
 
 		self._stop_compiler()
 		self._prepare_compiler(quiet=True)
 
-	def _on_failure(self)->None:
-		args=self.args
-		if args.failure_cmd:
-			subprocess.run(args.failure_cmd, shell=True, check=True)
+		return result
 
+	def _write_as_subprocess(self, s: str)->None:
+		"""
+		A hack to write some string in a way that the caller thinks it's written by the compiler.
+		"""
+		self._subprocess_pipe[1].write(s.encode('u8'))
 
 
 def cleanup_previous_processes()->None:
@@ -696,6 +819,8 @@ def cleanup_previous_processes()->None:
 
 
 def main(args=None)->None:
+	start_time=time.time()
+
 	cleanup_previous_processes()
 
 	if args is None:
@@ -770,8 +895,28 @@ def main(args=None)->None:
 		raise FileNotFoundError(f"File {args.filename} not found (in directory {os.getcwd()}).")
 
 	daemon=CompilationDaemon(args)
+
+	def maybe_show_time():
+		nonlocal start_time
+		if args.show_time:
+			sys.stdout.write(f"Time taken: {time.time()-start_time:.3f}s\n")
+			sys.stdout.flush()
+			start_time=time.time()
+
+	def run_callback_on_compilation_finish(success: bool)->None:
+		if success:
+			if args.success_cmd:
+				subprocess.run(args.success_cmd, shell=True, check=True)
+		else:
+			if args.failure_cmd:
+				subprocess.run(args.failure_cmd, shell=True, check=True)
+
 	with daemon:
-		daemon.recompile(False)
+		with copy_stream(daemon.subprocess_stdout, sys.stdout.buffer):
+			success=daemon.recompile(False)
+		sys.stdout.flush()
+		run_callback_on_compilation_finish(success)
+		maybe_show_time()
 
 		while True:
 			try:
@@ -792,12 +937,19 @@ def main(args=None)->None:
 			# wait for the specified delay
 			time.sleep(args.extra_delay)
 
+			# it's unfair to include the extra delay into time measurement
+			start_time=time.time()
+
 			# empty out the queue
 			while not q.empty():
 				tmp=q.get()
 				recompile_preamble=recompile_preamble or tmp
 
-			daemon.recompile(recompile_preamble)
+			with copy_stream(daemon.subprocess_stdout, sys.stdout.buffer):
+				success=daemon.recompile(recompile_preamble)
+			sys.stdout.flush()
+			run_callback_on_compilation_finish(success)
+			maybe_show_time()
 
 
 if __name__ == "__main__":
