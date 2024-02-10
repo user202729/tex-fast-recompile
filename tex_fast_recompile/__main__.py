@@ -368,24 +368,29 @@ class CompilerInstanceNormal(CompilerInstance):
 
 	def _read_stdout_thread_fn(self)->None:
 		process=self._process
-		while True:
-			assert process is not None
-			assert process.stdout is not None
-			# this is a bit inefficient in that it reads one byte at a time
-			# but I don't know how to do it better
-			content=process.stdout.read(1)
-			self._subprocess_stdout_queue.put(content)
-			if content==b"":
-				process.stdout.close()
-				break
+		try:
+			while True:
+				assert process is not None
+				assert process.stdout is not None
+				# this is a bit inefficient in that it reads one byte at a time
+				# but I don't know how to do it better
+				content=process.stdout.read(1)
+				if content==b"":
+					process.stdout.close()
+					break
+				self._subprocess_stdout_queue.put(content)
+		finally:
+			self._subprocess_stdout_queue.put(b"")
 
 	def _copy_all_stdout(self)->None:
-		while True:
-			content=self._subprocess_stdout_queue.get()
-			if content==b"":
-				break
-			self._subprocess_pipe[1].write(content)
-		self._subprocess_pipe[1].close()
+		try:
+			while True:
+				content=self._subprocess_stdout_queue.get()
+				if content==b"":
+					break
+				self._subprocess_pipe[1].write(content)
+		finally:
+			self._subprocess_pipe[1].close()
 
 	def finish(self)->bool:
 		"""
@@ -718,11 +723,14 @@ class CompilationDaemon:
 		and the PDF file is produced.
 		"""
 		args=self.args
-		if recompile_preamble:
-			self._write_as_subprocess("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
-			result=self._recompile_preamble_changed()
-		else:
-			result=self._recompile_preamble_not_changed()
+		try:
+			if recompile_preamble:
+				self._write_as_subprocess("Some preamble-watch file changed, recompiling." + "\n"*args.num_separation_lines)
+				result=self._recompile_preamble_changed()
+			else:
+				result=self._recompile_preamble_not_changed()
+		finally:
+			self._subprocess_pipe[1].close()
 		self._subprocess_pipe=create_pipe()
 		return result
 
