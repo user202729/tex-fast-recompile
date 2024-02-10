@@ -611,7 +611,7 @@ class CompilationDaemon:
 		self._prepare_compiler(quiet=True)
 
 	def _print_no_preamble_error(self, e: NoPreambleError)->None:
-		self._subprocess_pipe[1].write(f"! {e.args[0]}.\n")
+		self._subprocess_pipe[1].write(f"! {e.args[0]}.\n".encode('u8'))
 
 	def _prepare_compiler(self, *, quiet: bool)->bool:
 		"""
@@ -642,8 +642,13 @@ class CompilationDaemon:
 
 		try:
 			with precompile_daemon:
-				return_0=precompile_daemon.finish()
+				if quiet:
+					return_0=precompile_daemon.finish()
+				else:
+					with copy_stream(precompile_daemon.get_subprocess_stdout(), self._subprocess_pipe[1]):
+						return_0=precompile_daemon.finish()
 		except NoPreambleError as e:
+			self._print_no_preamble_error(e)
 			if not quiet: raise
 			return False
 
@@ -742,17 +747,7 @@ class CompilationDaemon:
 		self._stop_compiler()
 
 		if args.precompile_preamble and not self._path_to_fmt().is_file():
-			precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
-
-			try:
-				with precompile_daemon:
-					with copy_stream(precompile_daemon.get_subprocess_stdout(), self._subprocess_pipe[1]):
-						return_0=precompile_daemon.finish()
-			except NoPreambleError as e:
-				self._print_no_preamble_error(e)
-				return False
-
-			if not return_0:
+			if not self._precompile_preamble(quiet=False):
 				return False
 
 			assert self._path_to_fmt().is_file()
