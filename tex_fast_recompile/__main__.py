@@ -22,6 +22,7 @@ import io
 #import atexit
 import enum
 import psutil  # type: ignore
+import gzip
 from .util import *
 
 @dataclass
@@ -125,6 +126,7 @@ def get_parser()->argparse.ArgumentParser:
 					 "while if the value is too large, the speed-up by this program may be diminished by the waiting time "
 					 "before the file change is detected, in this case, this program may provide no benefit over latexmk.")
 	parser.add_argument("--precompile-preamble", action="store_true", help="Use mylatexformat package to precompile the preamble. Read README 'Precompiled preamble' section for details.")
+	parser.add_argument("--decompress-format-file", action="store_true", help="If precompile-preamble is true, this will furthermore decompress the format file. Refer to https://tex.stackexchange.com/a/708544/250119.")
 	parser.add_argument("filename", help="The filename to compile")
 	return parser
 
@@ -563,6 +565,10 @@ class _DaemonStatusUpdate(enum.Enum):
 	exiting=enum.auto()
 
 
+GZIP_MAGIC_NUMBER=b'\x1f\x8b'
+assert gzip.compress(b'').startswith(GZIP_MAGIC_NUMBER)
+
+
 @dataclass
 class CompilationDaemon:
 	"""
@@ -640,6 +646,8 @@ class CompilationDaemon:
 		assert args.precompile_preamble
 		precompile_daemon=self._create_daemon_object(MyLatexFormatStatus.precompile)
 
+		self._unlink_fmt()
+
 		try:
 			with precompile_daemon:
 				if quiet:
@@ -651,6 +659,14 @@ class CompilationDaemon:
 			self._print_no_preamble_error(e)
 			if not quiet: raise
 			return False
+
+		if args.decompress_format_file and self._path_to_fmt().is_file():
+			p: Path=self._path_to_fmt()
+			content=p.read_bytes()
+			content=gzip.decompress(content)
+			if content.startswith(GZIP_MAGIC_NUMBER):
+				content=gzip.compress(content, compresslevel=0)
+			p.write_bytes(content)
 
 		return return_0
 
