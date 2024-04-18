@@ -606,7 +606,7 @@ class CompilationDaemon:
 		"""
 		return self._subprocess_pipe[0]
 
-	def __enter__(self)->None:
+	def __enter__(self)->"CompilationDaemon":
 		"""
 		Start the compiler. See class documentation for detail.
 		"""
@@ -615,6 +615,7 @@ class CompilationDaemon:
 			self._temp_fmt_dir_path=Path(self._temp_fmt_dir.name)
 			self._temp_fmt_dir.__enter__()
 		self._prepare_compiler(quiet=True)
+		return self
 
 	def _print_no_preamble_error(self, e: NoPreambleError)->None:
 		self._subprocess_pipe[1].write(f"! {e.args[0]}.\n".encode('u8'))
