@@ -129,6 +129,8 @@ In the example above, if the `endofdump` command is not used, the assignment to 
 
 `\fastrecompileendpreamble` can also similarly be used, but it must be placed **after** `endofdump` command.
 
+See my answer posted at https://tex.stackexchange.com/a/687427/250119 for an explanation of the mechanism behind precompiled preamble.
+
 ## Common issues
 
 ### Note for Windows users
